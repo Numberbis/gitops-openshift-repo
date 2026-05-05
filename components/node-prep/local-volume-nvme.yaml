@@ -1,0 +1,77 @@
+---
+# LocalVolume CR — déclare au LSO quels disques bruts sont à exposer en PV
+# `local-volume`, sur quels nœuds, dans quelle StorageClass.
+#
+# Ce CR doit être appliqué APRÈS que :
+#   1. les nœuds OpenShift `elastic-data-hot` ont leurs disques NVMe
+#      attachés et présents en /dev/disk/by-id/... ,
+#   2. les labels `node-role.kubernetes.io/elastic-data-hot=` sont posés
+#      sur les nœuds cibles (via MachineSet ou `oc label node`),
+#   3. le LSO est installé (cf. bootstrap/07-…).
+#
+# ⚠ devicePaths : utiliser TOUJOURS `by-id` ou `by-path`, JAMAIS `by-name`
+#   (`/dev/nvme1n1` peut bouger d'un boot à l'autre selon l'ordre PCI).
+#   Les chemins ci-dessous sont des PLACEHOLDERS — récupérer les vrais
+#   IDs via `lsblk -o NAME,WWN,MODEL,SIZE` sur un nœud du pool.
+#
+# La StorageClass `nvme-local` produite est référencée par le CR
+# Elasticsearch (data_hot et data_frozen).
+
+# ── Pool data_hot : disques NVMe 16 TiB ──────────────────────────────
+apiVersion: local.storage.openshift.io/v1
+kind: LocalVolume
+metadata:
+  name: elastic-data-hot-nvme
+  namespace: openshift-local-storage
+spec:
+  nodeSelector:
+    nodeSelectorTerms:
+      - matchExpressions:
+          - key: node-role.kubernetes.io/elastic-data-hot
+            operator: Exists
+  tolerations:
+    - { key: workload, value: elastic-data-hot, effect: NoSchedule }
+  storageClassDevices:
+    - storageClassName: nvme-local
+      volumeMode: Filesystem
+      fsType: xfs
+      devicePaths:
+        # PLACEHOLDERS — adapter aux WWN réels du parc
+        - /dev/disk/by-id/nvme-INTEL_SSDPF2KX076TZ_XXXXXXXXXXXX
+        - /dev/disk/by-id/nvme-INTEL_SSDPF2KX076TZ_YYYYYYYYYYYY
+---
+# ── Pool data_frozen : disques NVMe plus petits (cache 100 GiB) ──────
+# Souvent un seul SSD/NVMe par nœud frozen suffit.
+apiVersion: local.storage.openshift.io/v1
+kind: LocalVolume
+metadata:
+  name: elastic-data-frozen-nvme
+  namespace: openshift-local-storage
+spec:
+  nodeSelector:
+    nodeSelectorTerms:
+      - matchExpressions:
+          - key: node-role.kubernetes.io/elastic-data-frozen
+            operator: Exists
+  tolerations:
+    - { key: workload, value: elastic-data-frozen, effect: NoSchedule }
+  storageClassDevices:
+    - storageClassName: nvme-local
+      volumeMode: Filesystem
+      fsType: xfs
+      devicePaths:
+        - /dev/disk/by-id/nvme-Samsung_SSD_980_PRO_500GB_XXXXXXXXXX
+---
+# ── Découverte automatique (alternative) ──────────────────────────────
+# Si vous préférez laisser LSO découvrir les disques disponibles plutôt
+# que de lister les chemins, utiliser un LocalVolumeDiscovery + un
+# LocalVolumeSet. Plus dynamique mais moins déterministe — préférer
+# LocalVolume avec chemins explicites en prod.
+#
+# apiVersion: local.storage.openshift.io/v1alpha1
+# kind: LocalVolumeDiscovery
+# metadata:
+#   name: elastic-disks
+#   namespace: openshift-local-storage
+# spec:
+#   nodeSelector: { ... }

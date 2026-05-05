@@ -1,0 +1,27 @@
+---
+# Overlay DEV — cluster minuscule pour itérer sans coûter 500 To de PV.
+#
+# Patches : 1 master (sacrifie le quorum, OK en dev), 1 data hot, supprime
+# warm/frozen/coordinating, réduit la taille des PV, supprime les
+# nodeSelectors/tolerations qui n'existent pas sur le cluster dev.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: elastic
+resources:
+  - ../../components/elasticsearch
+commonLabels:
+  env: dev
+patches:
+  - path: elasticsearch-patch.yaml
+    target:
+      group: elasticsearch.k8s.elastic.co
+      version: v1
+      kind: Elasticsearch
+      name: prod
+  # Pas de cert public en dev : on garde le cert auto-généré ECK.
+  # Donc on supprime les Certificate cert-manager et on patch les Routes.
+  - path: route-patch.yaml
+    target:
+      group: route.openshift.io
+      version: v1
+      kind: Route

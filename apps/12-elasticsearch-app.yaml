@@ -1,0 +1,62 @@
+---
+# Wave 12 — Couche 2 « Topologie cluster ».
+#
+# Déploie la *topologie* du cluster : CR Elasticsearch (5 nodeSets dimensionnés
+# pour 800 To en mono-cluster, rétention 120 j), CR Kibana, Certificate
+# externe et Routes OpenShift, ainsi que les ExternalSecrets nécessaires
+# (mot de passe internes, keystore secure-settings, clés Kibana).
+#
+# Wave 12 doit s'exécuter APRÈS 10/11 : on a besoin que (a) l'opérateur ECK
+# tourne, (b) le namespace + ESO + cert-manager soient prêts.
+#
+# `ServerSideApply=true` : indispensable pour les CR Elasticsearch
+# volumineux (les nodeSets dépassent vite la limite des 256 KiB de
+# l'annotation `last-applied-configuration` du client-side apply).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: elasticsearch
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "12"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://gitlab.com/Numberbis/gitops-openshift-repo.git
+    targetRevision: main
+    # Pointe sur l'overlay prod par défaut. Pour dev/staging, utiliser un
+    # ApplicationSet (cf. README_Elastic_Openshift.md) qui templatise `path`.
+    path: overlays/prod
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: elastic
+  syncPolicy:
+    automated:
+      prune: false   # ne JAMAIS auto-prune un cluster Elastic de 800 To
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true
+      # Les CRD ECK injectent des champs (status, generated certs).
+      # `RespectIgnoreDifferences` évite que ArgoCD batte avec ECK.
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 10m
+  # Champs gérés par l'opérateur ECK : on ignore tout drift sur eux,
+  # sinon ArgoCD se mettrait en OutOfSync à chaque renouvellement de cert
+  # interne ou évolution du status.
+  ignoreDifferences:
+    - group: elasticsearch.k8s.elastic.co
+      kind: Elasticsearch
+      jsonPointers:
+        - /status
+    - group: kibana.k8s.elastic.co
+      kind: Kibana
+      jsonPointers:
+        - /status

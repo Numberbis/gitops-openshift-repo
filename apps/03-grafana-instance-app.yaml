@@ -1,0 +1,35 @@
+---
+# Déploie l'instance Grafana, ses datasources (Thanos Querier d'OpenShift) et
+# les dashboards par défaut.
+# Sync wave 3 : nécessite que l'opérateur Grafana et ses CRDs soient en place.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: grafana-instance
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://gitlab.com/Numberbis/gitops-openshift-repo.git
+    targetRevision: main
+    path: components/grafana-instance
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: grafana
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

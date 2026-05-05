@@ -1,0 +1,62 @@
+---
+# Elastic Agent en mode DaemonSet : un pod par nœud OpenShift.
+#
+# Collecte :
+#   - métriques host (cgroups, /proc, /sys),
+#   - logs container (via /var/log/containers),
+#   - métriques kubelet,
+#   - métriques cluster (state, events) — concentrées sur un seul leader
+#     via le ClusterRole elastic-agent.
+#
+# SCC dédié `elastic-agent-scc` (cf. components/elastic-platform/) : on
+# n'utilise PAS le SCC privileged générique.
+apiVersion: agent.k8s.elastic.co/v1alpha1
+kind: Agent
+metadata:
+  name: node-agent
+  namespace: elastic
+spec:
+  version: 8.16.1
+  kibanaRef:
+    name: prod
+  fleetServerRef:
+    name: fleet-server
+  mode: fleet
+  daemonSet:
+    podTemplate:
+      metadata:
+        labels:
+          tier: agent-node
+      spec:
+        serviceAccountName: elastic-agent
+        # Tolerations : on doit aussi tourner sur les masters et les nœuds
+        # taintés `elastic-data-*`, sinon on perd la visibilité dessus.
+        tolerations:
+          - operator: Exists
+        hostNetwork: true
+        hostPID: true
+        dnsPolicy: ClusterFirstWithHostNet
+        # Pas de runAsNonRoot ici : l'Agent doit être uid 0 pour /proc.
+        # Le SCC custom autorise cette exception, encadrée par les caps
+        # listées dans scc-elastic-agent.yaml (pas de privileged générique).
+        containers:
+          - name: agent
+            volumeMounts:
+              - { name: proc,             mountPath: /hostfs/proc,    readOnly: true }
+              - { name: cgroup,           mountPath: /hostfs/sys/fs/cgroup, readOnly: true }
+              - { name: varlibdocker,     mountPath: /var/lib/docker,    readOnly: true }
+              - { name: varlog,           mountPath: /var/log,           readOnly: true }
+              - { name: varlibcontainers, mountPath: /var/lib/containers, readOnly: true }
+              - { name: etcfull,          mountPath: /hostfs/etc,        readOnly: true }
+              - { name: varfull,          mountPath: /hostfs/var,        readOnly: true }
+            resources:
+              requests: { cpu: "200m", memory: 512Mi }
+              limits:   { cpu: "1",    memory: 1Gi }
+        volumes:
+          - { name: proc,             hostPath: { path: /proc } }
+          - { name: cgroup,           hostPath: { path: /sys/fs/cgroup } }
+          - { name: varlibdocker,     hostPath: { path: /var/lib/docker } }
+          - { name: varlog,           hostPath: { path: /var/log } }
+          - { name: varlibcontainers, hostPath: { path: /var/lib/containers } }
+          - { name: etcfull,          hostPath: { path: /etc } }
+          - { name: varfull,          hostPath: { path: /var } }

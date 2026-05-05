@@ -1,0 +1,41 @@
+---
+# Wave 10 — Couche 1 « Plateforme Elastic ».
+#
+# Cette App ne déploie *pas* l'opérateur ECK lui-même (c'est fait en bootstrap
+# via 04-eck-operator-subscription.yaml, pour casser le poulet/œuf entre
+# ArgoCD et les CRD ECK). Elle réconcilie *en continu* la Subscription, son
+# epinglage de version et sa configuration WATCH_NAMESPACE.
+#
+# La séparation bootstrap / GitOps est volontaire : le bootstrap pose les CRD
+# une fois, et ArgoCD prend la main pour la dérive (`selfHeal: true`).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: eck-operator
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "10"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://gitlab.com/Numberbis/gitops-openshift-repo.git
+    targetRevision: main
+    path: components/eck-operator
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: openshift-operators
+  syncPolicy:
+    automated:
+      prune: false   # ne jamais auto-désinstaller un opérateur de prod
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

@@ -1,0 +1,19 @@
+---
+# Donne au ServiceAccount d'ArgoCD les droits cluster-admin nécessaires pour
+# déployer des Operators, des ConfigMaps dans openshift-monitoring, créer des
+# CRDs (Grafana, GrafanaDashboard, GrafanaDatasource), etc.
+#
+# Si vous voulez un periméter plus restreint, remplacez cluster-admin par un
+# ClusterRole personnalisé limité aux ressources réellement utilisées.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openshift-gitops-argocd-cluster-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: openshift-gitops-argocd-application-controller
+    namespace: openshift-gitops

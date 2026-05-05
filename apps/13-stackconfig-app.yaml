@@ -1,0 +1,46 @@
+---
+# Wave 13 — Couche 3 « Configuration stack ».
+#
+# C'est ici que vit la *configuration logique* du cluster : politiques ILM
+# (hot 7j → warm 30j → frozen 90j → delete 120j, dimensionnées 800 To),
+# repository de snapshots S3, SLM, index templates, role mappings OIDC.
+#
+# Avant ECK 2.6, tout ce contenu était de l'API REST post-déploiement
+# (curl + scripts). Aujourd'hui c'est un seul CR `StackConfigPolicy`
+# réconcilié par ECK — c'est *le* pivot du compromis hybride :
+#   « tout ce qui n'est pas un CR K8s natif est encapsulé dans une SCP. »
+#
+# Cette App s'applique APRÈS que le cluster Elasticsearch soit `Green`
+# (sync-wave 12 → 13). ECK rejette une SCP appliquée sur un cluster non
+# disponible.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: elastic-stackconfig
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "13"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://gitlab.com/Numberbis/gitops-openshift-repo.git
+    targetRevision: main
+    path: components/stackconfig
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: elastic
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 10m

@@ -1,0 +1,41 @@
+---
+# Wave 14 — Couche 4 « Workload / ingestion ».
+#
+# Déploie les producteurs de données : Fleet Server (control plane Elastic
+# Agent), DaemonSet Agent (collecte métriques nœud + logs container), APM
+# Server (ingestion APM/OTel).
+#
+# Wave 14 doit s'exécuter en dernier : le DaemonSet Agent enrôle ses politiques
+# auprès du Fleet Server, qui les pousse depuis Kibana, qui dépend du cluster
+# ES. Et la création du token d'enrôlement se fait via la SCP en wave 13.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: elastic-agents
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "14"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://gitlab.com/Numberbis/gitops-openshift-repo.git
+    targetRevision: main
+    path: components/elastic-agents
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: elastic
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

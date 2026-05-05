@@ -1,0 +1,48 @@
+---
+# Certificats TLS *externes* émis par cert-manager. Deux Certificate :
+# un pour Elasticsearch (clients Beats/Logstash/curl externes), un pour
+# Kibana (utilisateurs Web).
+#
+# Les certs *internes* (transport et HTTP cluster interne) sont gérés
+# 100 % par ECK avec sa propre CA — n'apparaissent pas ici.
+#
+# Renouvellement à 75 % de la durée (90 j → renouvellement à 67 j) :
+# ECK détecte le rotate du Secret et déclenche un rolling restart pour
+# pousser le nouveau cert dans les pods.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: es-http-tls
+  namespace: elastic
+spec:
+  secretName: es-http-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - elastic-prod.apps.cluster.example.com   # ⚠ adapter au domaine cluster
+  duration: 2160h       # 90 jours
+  renewBefore: 720h     # renouvellement à J-30
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: kibana-http-tls
+  namespace: elastic
+spec:
+  secretName: kibana-http-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - kibana-prod.apps.cluster.example.com
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always

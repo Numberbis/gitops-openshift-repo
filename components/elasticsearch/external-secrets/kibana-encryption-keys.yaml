@@ -1,0 +1,26 @@
+---
+# ExternalSecret : clés d'encryption Kibana (saved objects, security
+# cookies, reporting). Ces clés DOIVENT être persistées hors-cluster :
+# si elles changent, tous les saved objects encryptés sont invalidés.
+#
+# Path Vault attendu :
+#   secret/elastic/prod/kibana/encryption_keys
+#     ├── XPACK_SECURITY_ENCRYPTIONKEY              (32 bytes hex)
+#     ├── XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY (32 bytes hex)
+#     └── XPACK_REPORTING_ENCRYPTIONKEY             (32 bytes hex)
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: kibana-encryption-keys
+  namespace: elastic
+spec:
+  refreshInterval: 24h
+  secretStoreRef:
+    name: vault-elastic
+    kind: ClusterSecretStore
+  target:
+    name: kibana-encryption-keys
+    creationPolicy: Owner
+  dataFrom:
+    - extract:
+        key: elastic/prod/kibana/encryption_keys

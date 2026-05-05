@@ -1,0 +1,31 @@
+---
+# Configure la stack monitoring intégrée d'OpenShift (Prometheus, Alertmanager,
+# Thanos Querier) et active le User Workload Monitoring qui permet aux
+# applications utilisateurs de scraper leurs propres ServiceMonitors.
+#
+# Sync wave 1 : doit s'exécuter avant l'instance Grafana qui dépend de Thanos.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cluster-monitoring
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://gitlab.com/Numberbis/gitops-openshift-repo.git
+    targetRevision: main
+    path: components/cluster-monitoring
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: openshift-monitoring
+  syncPolicy:
+    automated:
+      prune: false  # On ne supprime pas les ConfigMaps si l'App est supprimée
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true

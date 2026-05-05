@@ -1,0 +1,35 @@
+---
+# Datasource Prometheus pointant sur le Thanos Querier d'OpenShift.
+# Thanos Querier agrège les métriques cluster ET user-workload, c'est donc
+# le seul endpoint qui permette une vue unifiée.
+#
+# L'authentification se fait via le token du ServiceAccount grafana-sa
+# (référencé via valueFrom -> Secret grafana-sa-token).
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDatasource
+metadata:
+  name: prometheus-thanos
+  namespace: grafana
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: grafana
+  valuesFrom:
+    - targetPath: "secureJsonData.httpHeaderValue1"
+      valueFrom:
+        secretKeyRef:
+          name: grafana-sa-token
+          key: token
+  datasource:
+    name: prometheus-thanos
+    type: prometheus
+    access: proxy
+    url: https://thanos-querier.openshift-monitoring.svc.cluster.local:9091
+    isDefault: true
+    editable: false
+    jsonData:
+      httpHeaderName1: "Authorization"
+      tlsSkipVerify: true
+      timeInterval: "30s"
+    secureJsonData:
+      httpHeaderValue1: "Bearer ${token}"

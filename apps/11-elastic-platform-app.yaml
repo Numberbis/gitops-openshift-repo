@@ -1,0 +1,44 @@
+---
+# Wave 11 — Couche 1 « Plateforme Elastic » (suite).
+#
+# Pose les éléments transverses qui doivent exister AVANT de pouvoir créer le
+# CR Elasticsearch :
+#   - namespace `elastic`,
+#   - NetworkPolicy par défaut (egress vers S3/Vault/IdP, ingress depuis Kibana
+#     et Fleet uniquement),
+#   - ClusterSecretStore (ESO → Vault),
+#   - ClusterIssuer cert-manager pour les certs externes,
+#   - SCC custom dédié à Elastic Agent (jamais le SCC `privileged` global).
+#
+# C'est la *fondation*. Sans cette App, les couches 2/3/4 plantent au sync.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: elastic-platform
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "11"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://gitlab.com/Numberbis/gitops-openshift-repo.git
+    targetRevision: main
+    path: components/elastic-platform
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: elastic
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

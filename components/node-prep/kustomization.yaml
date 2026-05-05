@@ -1,0 +1,8 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Pas de `namespace:` : MachineConfig est cluster-scoped, LocalVolume est
+# dans `openshift-local-storage` (déjà déclaré dans chaque manifest).
+resources:
+  - machineconfig-sysctl.yaml
+  - local-volume-nvme.yaml

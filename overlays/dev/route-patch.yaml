@@ -1,0 +1,13 @@
+---
+# Patch DEV : on bascule les Routes en `reencrypt` pour utiliser le cert
+# wildcard du router OpenShift de dev (pas de cert-manager configuré).
+# `host` est laissé vide : OpenShift génère un FQDN auto sur apps-dev.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: placeholder       # remplacé par le sélecteur kustomize
+spec:
+  host: null
+  tls:
+    termination: reencrypt
+    insecureEdgeTerminationPolicy: Redirect

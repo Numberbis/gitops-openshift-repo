@@ -1,0 +1,32 @@
+---
+# Route OpenShift exposant l'API Elasticsearch HTTPS à l'extérieur du cluster.
+#
+# `passthrough` : la connexion TLS est passée TELLE QUELLE jusqu'au pod ES,
+# qui présente le cert émis par cert-manager (cf. certificate.yaml). Avantage :
+# pas de re-encryption au router, le client voit directement le cert
+# `elastic-prod.apps.cluster.example.com`.
+#
+# Alternative `reencrypt` : si vous voulez que le router OpenShift présente
+# son propre cert wildcard et re-chiffre vers le cert ECK interne. C'est
+# plus simple côté DNS mais perd le SAN custom. Choisi délibérément
+# `passthrough` ici.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: elasticsearch
+  namespace: elastic
+  annotations:
+    haproxy.router.openshift.io/timeout: "120s"
+    haproxy.router.openshift.io/balance: source        # sticky par client IP
+spec:
+  host: elastic-prod.apps.cluster.example.com          # ⚠ adapter
+  to:
+    kind: Service
+    name: prod-es-http                                 # service généré par ECK
+    weight: 100
+  port:
+    targetPort: https
+  tls:
+    termination: passthrough
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None

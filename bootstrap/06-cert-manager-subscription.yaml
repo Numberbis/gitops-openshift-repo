@@ -1,0 +1,23 @@
+---
+# Souscription à cert-manager Operator for Red Hat OpenShift.
+#
+# Rôle : émettre les certificats TLS *externes* exposés par les Routes
+# OpenShift (Elasticsearch HTTPS, Kibana HTTPS, APM Server). Les certificats
+# *internes* (transport inter-nœuds + HTTP cluster interne) restent gérés
+# par ECK avec sa propre CA — on ne touche jamais à ceux-là.
+#
+# L'usage de l'opérateur Red Hat (et non du Helm chart upstream) garantit le
+# support officiel sur OpenShift et la compatibilité avec les RouteTLS et
+# l'OAuth interne.
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: openshift-cert-manager-operator
+  namespace: openshift-operators
+spec:
+  channel: stable-v1
+  installPlanApproval: Manual
+  name: openshift-cert-manager-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  startingCSV: cert-manager-operator.v1.14.0

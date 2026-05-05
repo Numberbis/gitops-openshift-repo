@@ -1,0 +1,39 @@
+---
+# ClusterIssuer cert-manager pour les certificats *externes* (Routes
+# OpenShift). Deux issuers sont définis :
+#
+#   - `letsencrypt-prod` pour les domaines exposés publiquement (HTTP-01
+#     via Route OpenShift).
+#   - `internal-ca` pour les domaines internes signés par votre PKI
+#     d'entreprise (à compléter avec un secret de CA).
+#
+# Les certificats *internes* (transport ES + HTTP cluster) ne passent PAS
+# par cert-manager : ECK les gère avec sa propre CA, c'est volontaire et
+# documenté.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: sre-elastic@example.com    # ⚠ adapter
+    privateKeySecretRef:
+      name: letsencrypt-prod-account
+    solvers:
+      - http01:
+          # Sur OpenShift, le solver HTTP-01 doit passer par une Route. Le
+          # plugin `openshift-routes` (déployé avec l'op cert-manager Red Hat)
+          # créé automatiquement la Route éphémère pour le challenge.
+          ingress:
+            ingressClassName: openshift-default
+---
+# Issuer interne (à activer si vous avez une CA d'entreprise). Le secret
+# `internal-ca-keypair` doit être provisionné par ESO depuis Vault.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: internal-ca
+spec:
+  ca:
+    secretName: internal-ca-keypair

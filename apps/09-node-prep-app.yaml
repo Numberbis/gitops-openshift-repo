@@ -1,0 +1,54 @@
+---
+# Wave 9 — Préparation des nœuds OpenShift pour Elasticsearch.
+#
+# Contenu :
+#   * MachineConfig sysctl (vm.max_map_count = 262144 sur tous les workers),
+#   * LocalVolume CR pour les pools NVMe data_hot + data_frozen.
+#
+# ⚠⚠ SYNC MANUEL — pas d'`automated` ⚠⚠
+# Un MachineConfig déclenche un rolling reboot des nœuds par MCO. Sur
+# un cluster prod 800 To, on NE veut PAS qu'ArgoCD réapplique
+# automatiquement un drift sur cette ressource (un commit malheureux
+# pourrait redémarrer toute la flotte data sans fenêtre).
+#
+# Procédure d'application :
+#   1. Pousser le commit sur la branche.
+#   2. ArgoCD passe l'App en `OutOfSync` (visible dans l'UI).
+#   3. Lire le diff, valider qu'on a une fenêtre de maintenance.
+#   4. Cliquer `Sync` manuellement (ou `argocd app sync node-prep`).
+#   5. Surveiller `oc get mcp` jusqu'à `UPDATED=True UPDATING=False`.
+#
+# `prune: false` : on ne supprime jamais un MachineConfig en place sans
+# ouvrir un ticket (ça inverserait le sysctl et coucherait le cluster
+# Elastic au prochain restart de pod).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: node-prep
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "9"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://gitlab.com/Numberbis/gitops-openshift-repo.git
+    targetRevision: main
+    path: components/node-prep
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: openshift-local-storage
+  syncPolicy:
+    # PAS d'`automated:` ici — sync manuel obligatoire.
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true
+      # On ne respecte pas `automated`, mais on peut quand même retry
+      # un sync en échec si on l'a déclenché manuellement.
+    retry:
+      limit: 3
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

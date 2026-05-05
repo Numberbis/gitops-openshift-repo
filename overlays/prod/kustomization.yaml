@@ -1,0 +1,14 @@
+---
+# Overlay PROD — passthrough sur le base 800 To.
+#
+# Aucune modification : les manifests dans `components/elasticsearch/`
+# sont déjà dimensionnés pour la prod (3 master, 8 hot, 16 warm, 6 frozen,
+# 4 coordinating). C'est l'overlay référencée par
+# `apps/12-elasticsearch-app.yaml`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: elastic
+resources:
+  - ../../components/elasticsearch
+commonLabels:
+  env: prod

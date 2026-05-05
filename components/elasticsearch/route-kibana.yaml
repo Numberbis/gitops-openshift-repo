@@ -1,0 +1,22 @@
+---
+# Route OpenShift pour Kibana. `passthrough` également pour exposer le
+# cert custom (kibana-prod.apps...) plutôt que le wildcard du router.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: kibana
+  namespace: elastic
+  annotations:
+    haproxy.router.openshift.io/timeout: "120s"
+spec:
+  host: kibana-prod.apps.cluster.example.com           # ⚠ adapter
+  to:
+    kind: Service
+    name: prod-kb-http
+    weight: 100
+  port:
+    targetPort: https
+  tls:
+    termination: passthrough
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None

@@ -1,0 +1,16 @@
+---
+# Installation du Grafana Operator (version v5+) depuis le catalogue community.
+# Ce CR Subscription souscrit le namespace au flux d'updates de l'opérateur.
+#
+# Le canal "v5" correspond à la branche actuelle (CRDs grafana.integreatly.org/v1beta1).
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: grafana-operator
+  namespace: grafana
+spec:
+  channel: v5
+  installPlanApproval: Automatic
+  name: grafana-operator
+  source: community-operators
+  sourceNamespace: openshift-marketplace

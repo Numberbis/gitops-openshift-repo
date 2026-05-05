@@ -1,0 +1,40 @@
+---
+# MachineConfig — pose `vm.max_map_count = 262144` sur tous les workers.
+#
+# Pourquoi au niveau nœud et PAS via initContainer privilégié :
+#   * Un initContainer qui set sysctl exige `securityContext.privileged`
+#     ou la cap CAP_SYS_ADMIN, incompatible avec le SCC `restricted-v2`
+#     d'OpenShift sans dérogation.
+#   * Un MachineConfig est appliqué une fois pour toutes par MCO et
+#     persiste à travers les reboots.
+#
+# CIBLAGE :
+#   `machineconfiguration.openshift.io/role: worker` → tous les workers.
+#   Le sysctl est inoffensif sur les nœuds non-Elastic. Si vous voulez
+#   l'isoler (et accepter les reboots groupés), créez un MachineConfigPool
+#   dédié `elastic-data` ciblant un label `node-role.kubernetes.io/elastic-data`.
+#
+# ⚠ APPLIQUER UN MachineConfig REDÉMARRE LES NŒUDS, séquentiellement par
+#   défaut (1 à la fois selon `maxUnavailable` du MCP). Sur un cluster
+#   prod 800 To, planifier hors fenêtre d'ingestion pic.
+#
+# Le contenu du fichier sysctl est encodé Ignition v3 base64 :
+#   echo "vm.max_map_count = 262144" | base64
+#   → dm0ubWF4X21hcF9jb3VudCA9IDI2MjE0NAo=
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  name: 99-elastic-sysctl
+  labels:
+    machineconfiguration.openshift.io/role: worker
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+        - path: /etc/sysctl.d/99-elastic.conf
+          mode: 0644
+          overwrite: true
+          contents:
+            source: data:text/plain;charset=utf-8;base64,dm0ubWF4X21hcF9jb3VudCA9IDI2MjE0NAo=

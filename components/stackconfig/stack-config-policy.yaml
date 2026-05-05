@@ -1,0 +1,266 @@
+---
+# StackConfigPolicy — pivot du modèle hybride.
+#
+# Encapsule TOUT ce qui n'est pas un CR Kubernetes natif :
+#   - cluster settings (action.destructive_requires_name, …),
+#   - repositories de snapshots (S3),
+#   - politiques SLM (snapshots planifiés),
+#   - politiques ILM (lifecycle hot 7j → warm 30j → frozen 90j → delete 120j),
+#   - composable index templates,
+#   - rôles + role mappings (fédération OIDC),
+#   - configuration Kibana (auth providers, fleet).
+#
+# Avantages :
+#   * tout est dans Git → diff = audit trail,
+#   * ECK réécrit tout changement hors-bande (selfHeal logique),
+#   * un `git revert` suffit à rollback un changement de politique.
+#
+# Sélection : `resourceSelector.matchLabels.env: prod` matche le CR
+# Elasticsearch (et Kibana) qui porte ce label.
+apiVersion: stackconfigpolicy.k8s.elastic.co/v1alpha1
+kind: StackConfigPolicy
+metadata:
+  name: prod-config
+  namespace: elastic
+spec:
+  resourceSelector:
+    matchLabels:
+      env: prod
+
+  # secureSettings : clés S3, smtp, OIDC client_secret, …
+  # Le secret K8s est lui-même produit par ESO depuis Vault.
+  secureSettings:
+    - secretName: es-secure-settings
+
+  # ────────────────────────────────────────────────────────────────────
+  # Configuration Elasticsearch
+  # ────────────────────────────────────────────────────────────────────
+  elasticsearch:
+
+    clusterSettings:
+      # Garde-fou : interdit `DELETE /*` ou `DELETE /_all`.
+      action.destructive_requires_name: true
+      # Activation de l'historique ILM (audit des transitions de phase).
+      indices.lifecycle.history_index_enabled: true
+      # Searchable snapshots : limite agressive du débit cache pour éviter
+      # de saturer le réseau S3 lors d'un cold-start massif.
+      xpack.searchable_snapshots.cache_fetch_async_thread_pool.keep_alive: 30s
+
+    # ── Configuration ES (yaml) — auth, audit, monitoring ───────────────
+    config:
+      xpack.security.enabled: true
+      xpack.security.audit.enabled: true
+      xpack.security.audit.logfile.events.include: ["access_denied", "authentication_failed", "anonymous_access_denied", "tampered_request", "run_as_denied"]
+
+      # Realm OIDC fédérant l'OAuth OpenShift. Le client_secret est dans
+      # le keystore (cf. secureSettings).
+      xpack.security.authc.realms.oidc.oidc-openshift:
+        order: 2
+        rp.client_id: "elastic-prod"
+        rp.response_type: code
+        rp.requested_scopes: ["openid", "profile", "email", "groups"]
+        rp.redirect_uri: "https://kibana-prod.apps.cluster.example.com/api/security/oidc/callback"
+        op.issuer: "https://oauth-openshift.apps.cluster.example.com"
+        op.authorization_endpoint: "https://oauth-openshift.apps.cluster.example.com/oauth/authorize"
+        op.token_endpoint: "https://oauth-openshift.apps.cluster.example.com/oauth/token"
+        op.userinfo_endpoint: "https://oauth-openshift.apps.cluster.example.com/oauth/userinfo"
+        op.jwkset_path: "https://oauth-openshift.apps.cluster.example.com/oauth/keys"
+        claims.principal: preferred_username
+        claims.groups: groups
+
+    # ── Repositories de snapshots ───────────────────────────────────────
+    snapshotRepositories:
+      backup-s3:
+        type: s3
+        settings:
+          bucket: elastic-prod-snapshots          # ⚠ adapter
+          base_path: prod-cluster/backups
+          client: default                         # client S3 keystore
+          # access_key/secret_key dans le keystore via secureSettings.
+          # Throttle pour ne pas saturer la liaison réseau.
+          max_restore_bytes_per_sec: "200mb"
+          max_snapshot_bytes_per_sec: "200mb"
+      # Repo dédié searchable_snapshots — séparé du repo de backup pour
+      # appliquer une rétention différente (jamais purgé tant que des
+      # indices frozen le référencent).
+      searchable-s3:
+        type: s3
+        settings:
+          bucket: elastic-prod-searchable
+          base_path: prod-cluster/searchable
+          client: default
+          # PAS de throttle ici : c'est le chemin chaud du tier frozen.
+
+    # ── SLM (snapshot lifecycle) ────────────────────────────────────────
+    snapshotLifecyclePolicies:
+      daily-full:
+        schedule: "0 30 1 * * ?"                  # 01:30 UTC chaque jour
+        name: "<daily-full-{now/d}>"
+        repository: backup-s3
+        config:
+          indices: ["*"]
+          include_global_state: true
+          partial: false
+        retention:
+          expire_after: "30d"
+          min_count: 14
+          max_count: 60
+      hourly-recent:
+        schedule: "0 0 * * * ?"                   # toutes les heures
+        name: "<hourly-recent-{now/d{yyyyMMdd-HH}}>"
+        repository: backup-s3
+        config:
+          indices: ["logs-*", "metrics-*"]
+          include_global_state: false
+        retention:
+          expire_after: "2d"
+          min_count: 24
+          max_count: 72
+
+    # ── ILM (index lifecycle) — pivot du sizing 800 To ──────────────────
+    # hot 7j → warm 30j → frozen 90j → delete 120j
+    indexLifecyclePolicies:
+      logs-ilm:
+        phases:
+          hot:
+            min_age: "0ms"
+            actions:
+              rollover:
+                # 50 GiB/shard primary ou 1 jour, premier critère atteint.
+                max_primary_shard_size: "50gb"
+                max_age: "1d"
+              set_priority: { priority: 100 }
+          warm:
+            min_age: "7d"
+            actions:
+              # Au passage warm : shrink à 1 shard, force-merge à 1 segment,
+              # codec best_compression. Économise ~30 % de stockage.
+              shrink: { number_of_shards: 1 }
+              forcemerge: { max_num_segments: 1 }
+              allocate:
+                include: { _tier_preference: "data_warm" }
+                number_of_replicas: 1
+              set_priority: { priority: 50 }
+          # PAS de phase `cold` ici : on saute directement de warm à frozen.
+          # Le tier cold (full mount searchable_snapshot) coûterait des nodes
+          # supplémentaires sans valeur ajoutée à 800 To si frozen suffit.
+          frozen:
+            min_age: "30d"
+            actions:
+              searchable_snapshot:
+                snapshot_repository: searchable-s3
+                force_merge_index: false
+          delete:
+            min_age: "120d"
+            actions:
+              delete:
+                delete_searchable_snapshot: true   # purge S3 aussi
+
+      # Politique séparée pour les métriques (rétention plus courte).
+      metrics-ilm:
+        phases:
+          hot:
+            min_age: "0ms"
+            actions:
+              rollover: { max_primary_shard_size: "30gb", max_age: "1d" }
+          warm:
+            min_age: "3d"
+            actions:
+              shrink: { number_of_shards: 1 }
+              forcemerge: { max_num_segments: 1 }
+              allocate: { include: { _tier_preference: "data_warm" }, number_of_replicas: 1 }
+          frozen:
+            min_age: "14d"
+            actions:
+              searchable_snapshot: { snapshot_repository: searchable-s3 }
+          delete:
+            min_age: "60d"
+            actions: { delete: { delete_searchable_snapshot: true } }
+
+    # ── Index templates composables ─────────────────────────────────────
+    indexTemplates:
+      componentTemplates:
+        # Settings communs à tous les flux logs.
+        logs-settings:
+          template:
+            settings:
+              # 12 shards primaires en hot pour répartir l'ingestion sur
+              # les 8 data_hot (12 % overhead). Sera shrink à 1 en warm.
+              number_of_shards: 12
+              number_of_replicas: 1
+              codec: best_compression
+              refresh_interval: "10s"     # plus relâché qu'1s par défaut
+              # Isolation par tier : on contraint l'allocation initiale
+              # à hot, puis l'ILM gère les transitions.
+              index.routing.allocation.include._tier_preference: "data_hot"
+
+        # Mappings type pour les logs structurés.
+        logs-mappings:
+          template:
+            mappings:
+              dynamic: "strict"
+              dynamic_templates:
+                - strings_as_keyword:
+                    match_mapping_type: string
+                    mapping: { type: keyword, ignore_above: 8192 }
+              properties:
+                "@timestamp": { type: date }
+                message:      { type: match_only_text }
+                trace.id:     { type: keyword }
+                span.id:      { type: keyword }
+
+      composableIndexTemplates:
+        logs-template:
+          index_patterns: ["logs-*"]
+          priority: 500
+          composed_of: ["logs-settings", "logs-mappings"]
+          template:
+            settings:
+              index.lifecycle.name: logs-ilm
+              index.lifecycle.rollover_alias: logs
+        metrics-template:
+          index_patterns: ["metrics-*"]
+          priority: 500
+          composed_of: ["logs-settings"]
+          template:
+            settings:
+              index.lifecycle.name: metrics-ilm
+              index.lifecycle.rollover_alias: metrics
+              number_of_shards: 6
+
+    # ── Rôles et role mappings ──────────────────────────────────────────
+    roleMappings:
+      sre-elastic-superuser:
+        roles: ["superuser"]
+        rules:
+          field: { "groups": "sre-elastic" }     # claim OIDC
+        enabled: true
+      app-readonly:
+        roles: ["viewer"]
+        rules:
+          field: { "groups": "elastic-readers" }
+        enabled: true
+      ingest-writers:
+        roles: ["editor", "ingest_admin"]
+        rules:
+          field: { "groups": "elastic-ingest" }
+        enabled: true
+
+  # ────────────────────────────────────────────────────────────────────
+  # Configuration Kibana
+  # ────────────────────────────────────────────────────────────────────
+  kibana:
+    config:
+      # Auth : OIDC en provider 0 (par défaut), basic en provider 1
+      # (uniquement pour le user break-glass).
+      xpack.security.authc.providers:
+        oidc.openshift-oidc:
+          order: 0
+          realm: oidc-openshift
+          description: "Sign in with OpenShift"
+        basic.basic1:
+          order: 1
+          showInSelector: false        # caché du sélecteur visuel
+      elasticsearch.requestHeadersWhitelist: ["authorization", "content-type"]
+      # Encryption keys : injectées en envFrom dans le pod Kibana
+      # (cf. components/elasticsearch/kibana.yaml).

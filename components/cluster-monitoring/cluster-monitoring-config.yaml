@@ -1,0 +1,38 @@
+---
+# Configuration de la stack monitoring intégrée d'OpenShift.
+# Documentation : https://docs.openshift.com/container-platform/latest/monitoring/configuring-the-monitoring-stack.html
+#
+# Active explicitement le User Workload Monitoring (Prometheus dédié aux apps
+# utilisateurs dans le namespace openshift-user-workload-monitoring).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    enableUserWorkload: true
+
+    prometheusK8s:
+      retention: 15d
+      retentionSize: 40GB
+      # Décommentez pour activer la persistance (recommandé en production).
+      # volumeClaimTemplate:
+      #   spec:
+      #     storageClassName: gp3-csi
+      #     resources:
+      #       requests:
+      #         storage: 50Gi
+
+    alertmanagerMain:
+      # Décommentez pour activer la persistance (recommandé en production).
+      # volumeClaimTemplate:
+      #   spec:
+      #     storageClassName: gp3-csi
+      #     resources:
+      #       requests:
+      #         storage: 10Gi
+
+    thanosQuerier:
+      # Active la déduplication entre les replicas Prometheus.
+      enableRequestLogging: false

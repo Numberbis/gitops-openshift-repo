@@ -1,0 +1,125 @@
+---
+# NetworkPolicy par défaut « deny-all » : aucun trafic n'entre/sort du
+# namespace `elastic` sauf ce que les NetworkPolicy suivantes autorisent
+# explicitement.
+#
+# Sur un cluster qui héberge 800 To de données potentiellement sensibles,
+# c'est le minimum syndical. La règle est inversée par rapport au défaut
+# OpenShift (allow-all intra-namespace).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: elastic
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Trafic intra-cluster Elasticsearch : transport (9300) et HTTP (9200) entre
+# tous les pods du même cluster ECK. Sélectionné par les labels que pose ECK.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-elasticsearch-internal
+  namespace: elastic
+spec:
+  podSelector:
+    matchLabels:
+      common.k8s.elastic.co/type: elasticsearch
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              common.k8s.elastic.co/type: elasticsearch
+      ports:
+        - { protocol: TCP, port: 9200 }
+        - { protocol: TCP, port: 9300 }
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              common.k8s.elastic.co/type: elasticsearch
+      ports:
+        - { protocol: TCP, port: 9200 }
+        - { protocol: TCP, port: 9300 }
+---
+# Kibana → Elasticsearch
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kibana-to-elasticsearch
+  namespace: elastic
+spec:
+  podSelector:
+    matchLabels:
+      common.k8s.elastic.co/type: elasticsearch
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              common.k8s.elastic.co/type: kibana
+      ports:
+        - { protocol: TCP, port: 9200 }
+---
+# Fleet Server / Agent / APM → Elasticsearch + Kibana
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-agents-to-stack
+  namespace: elastic
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: common.k8s.elastic.co/type, operator: In, values: ["elasticsearch", "kibana"] }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: common.k8s.elastic.co/type, operator: In, values: ["agent", "apm"] }
+      ports:
+        - { protocol: TCP, port: 9200 }
+        - { protocol: TCP, port: 5601 }
+---
+# Egress autorisé pour TOUS les pods Elastic vers :
+#   - DNS interne OpenShift,
+#   - kube-apiserver (ECK l'utilise pour le watch),
+#   - object storage S3/ODF (snapshots + searchable_snapshots du tier frozen),
+#   - IdP OIDC OpenShift,
+#   - Vault (pour ESO et le keystore Elasticsearch).
+#
+# ⚠ Les CIDR/ports cibles sont des PLACEHOLDERS — adapter à votre topologie.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-platform
+  namespace: elastic
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-dns
+      ports:
+        - { protocol: UDP, port: 5353 }
+        - { protocol: TCP, port: 5353 }
+    # kube-apiserver (port standard 6443)
+    - ports:
+        - { protocol: TCP, port: 6443 }
+    # Object storage S3/ODF — REMPLACER PAR VOS CIDR
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/8     # placeholder cluster-internal ODF/MCG
+      ports:
+        - { protocol: TCP, port: 443 }
+    # Internet sortant pour S3 public et IdP — restreindre par FQDN si possible
+    # via egress proxy ou OVN admin-network-policies.

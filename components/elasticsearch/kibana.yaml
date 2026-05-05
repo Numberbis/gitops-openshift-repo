@@ -1,0 +1,73 @@
+---
+# CR Kibana — front Web et console admin du cluster Elastic.
+#
+# 2 réplicas en HA (anti-affinity hostname). Pas plus : Kibana est sans
+# état utile (sessions stockées en ES), c'est le frontal.
+#
+# `elasticsearchRef` pointe le CR Elasticsearch du même namespace : ECK
+# génère un secret de service-account `kibana-system` et configure tout.
+#
+# Les clés d'encryption (saved objects, security cookies, reporting) sont
+# injectées par envFrom à partir d'un Secret produit par ESO. Sans ces
+# clés persistées hors-cluster, un restart de Kibana invalide les saved
+# objects encryptés (alertes, connecteurs, watcher actions).
+apiVersion: kibana.k8s.elastic.co/v1
+kind: Kibana
+metadata:
+  name: prod
+  namespace: elastic
+  labels:
+    env: prod
+spec:
+  version: 8.16.1
+  count: 2
+  elasticsearchRef:
+    name: prod
+  http:
+    tls:
+      certificate:
+        secretName: kibana-http-tls
+    service:
+      spec:
+        type: ClusterIP
+  config:
+    server.publicBaseUrl: "https://kibana-prod.apps.cluster.example.com"
+    # Auth providers détaillés dans la StackConfigPolicy (champ
+    # kibana.config) pour rester en un seul endroit. On laisse ici
+    # uniquement les paramètres qui n'existent pas dans la SCP.
+    elasticsearch.requestTimeout: 120000
+    elasticsearch.shardTimeout: 60000
+    # Reporting / saved objects encryption — clés depuis ESO (envFrom).
+    # ⚠ Ne JAMAIS coder en dur ici.
+  podTemplate:
+    metadata:
+      labels:
+        tier: kibana
+    spec:
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  kibana.k8s.elastic.co/name: prod
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: kibana
+          envFrom:
+            - secretRef:
+                name: kibana-encryption-keys     # produit par ESO
+          resources:
+            requests: { cpu: "1", memory: 2Gi }
+            limits:   { cpu: "2", memory: 4Gi }   # Kibana = Node.js, limit OK
+          readinessProbe:
+            httpGet:
+              path: /api/status
+              port: 5601
+              scheme: HTTPS
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6

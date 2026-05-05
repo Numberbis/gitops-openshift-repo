@@ -1,0 +1,10 @@
+---
+# OperatorGroup avec targetNamespaces vide => mode AllNamespaces, requis pour
+# que le Grafana Operator puisse gérer des CRs dans n'importe quel namespace
+# si vous le souhaitez (utile si vous voulez des dashboards par projet).
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: grafana-operator
+  namespace: grafana
+spec: {}

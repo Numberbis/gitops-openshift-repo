@@ -1,0 +1,62 @@
+---
+# APM Server (mode standalone, pas via Fleet ici — choix volontaire pour
+# isoler le pipeline APM des évolutions Fleet).
+#
+# 3 réplicas pour absorber les bursts d'ingestion APM (typiquement ~10 %
+# du volume logs en débit pic). Service ClusterIP exposé en interne.
+#
+# Pour un cluster 800 To, anticiper : APM peut générer ~500 GiB-1 TiB/jour
+# de spans + métriques selon la couverture des services. Le composant
+# `metrics-template` (cf. SCP) gère la rétention via metrics-ilm (60 j).
+apiVersion: apm.k8s.elastic.co/v1
+kind: ApmServer
+metadata:
+  name: prod-apm
+  namespace: elastic
+spec:
+  version: 8.16.1
+  count: 3
+  elasticsearchRef:
+    name: prod
+  kibanaRef:
+    name: prod
+  http:
+    tls:
+      certificate:
+        secretName: apm-http-tls
+    service:
+      spec:
+        type: ClusterIP
+  config:
+    apm-server:
+      auth:
+        anonymous:
+          enabled: false
+        secret_token:
+          # Token lu depuis le keystore (secureSettings de la SCP).
+          enabled: true
+      max_event_size: 307200    # 300 KiB, suffit pour la plupart des spans
+      rum:
+        enabled: false          # désactivé : pas d'exposition publique
+  podTemplate:
+    metadata:
+      labels:
+        tier: apm
+    spec:
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    apm.k8s.elastic.co/name: prod-apm
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: apm-server
+          resources:
+            requests: { cpu: "500m", memory: 1Gi }
+            limits:   { cpu: "2",    memory: 2Gi }

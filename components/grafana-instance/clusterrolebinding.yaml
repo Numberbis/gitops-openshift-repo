@@ -1,0 +1,16 @@
+---
+# Bind le ClusterRole cluster-monitoring-view (fourni par OpenShift) au SA
+# grafana-sa : autorise les requêtes PromQL via Thanos Querier sur l'ensemble
+# des métriques (cluster + user-workload).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: grafana-cluster-monitoring-view
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-monitoring-view
+subjects:
+  - kind: ServiceAccount
+    name: grafana-sa
+    namespace: grafana

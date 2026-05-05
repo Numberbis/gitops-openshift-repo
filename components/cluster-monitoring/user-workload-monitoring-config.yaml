@@ -1,0 +1,26 @@
+---
+# Configuration spécifique du Prometheus dédié aux User Workloads.
+# Ce ConfigMap n'a d'effet que si enableUserWorkload est à true dans
+# cluster-monitoring-config.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    prometheus:
+      retention: 15d
+      retentionSize: 20GB
+      # Décommentez pour activer la persistance (recommandé en production).
+      # volumeClaimTemplate:
+      #   spec:
+      #     storageClassName: gp3-csi
+      #     resources:
+      #       requests:
+      #         storage: 30Gi
+
+    # Active un Alertmanager dédié aux user workloads. Si false (défaut),
+    # les alertes user-workload sont envoyées à l'Alertmanager principal.
+    alertmanager:
+      enabled: false

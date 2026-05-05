@@ -1,0 +1,43 @@
+---
+# ExternalSecret : matérialise un Secret K8s `es-internal-users` au format
+# attendu par le file_realm Elasticsearch (cf. CR Elasticsearch >
+# spec.auth.fileRealm).
+#
+# Format file_realm :
+#   key `users`        : lignes "<user>:<bcrypt-hash>"
+#   key `users_roles`  : lignes "<role>:<user1>,<user2>"
+#
+# On y stocke uniquement les comptes break-glass (recovery quand OIDC est
+# down). Les utilisateurs métier passent par OIDC (cf. StackConfigPolicy >
+# roleMappings).
+#
+# Path Vault attendu :
+#   secret/elastic/prod/file-realm/users         (multiline, format file_realm)
+#   secret/elastic/prod/file-realm/users_roles   (idem)
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: es-internal-users
+  namespace: elastic
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: vault-elastic
+    kind: ClusterSecretStore
+  target:
+    name: es-internal-users
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      data:
+        users: "{{ .users }}"
+        users_roles: "{{ .users_roles }}"
+  data:
+    - secretKey: users
+      remoteRef:
+        key: elastic/prod/file-realm
+        property: users
+    - secretKey: users_roles
+      remoteRef:
+        key: elastic/prod/file-realm
+        property: users_roles

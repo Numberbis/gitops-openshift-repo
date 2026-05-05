@@ -1,0 +1,29 @@
+---
+# Réplique GitOps de la Subscription ECK (cf. bootstrap/04-…). Une fois
+# l'opérateur installé en bootstrap, c'est cette ressource qui maintient
+# l'état désiré (channel, version épinglée, scope WATCH_NAMESPACE) — toute
+# modification hors-bande sera réécrite par `selfHeal: true`.
+#
+# CHANGER LA VERSION : modifier `startingCSV`, commit & push, attendre que
+# ArgoCD passe la sub en `UpgradePending`, puis approuver l'InstallPlan
+# manuellement (`installPlanApproval: Manual`). Ne pas approuver
+# automatiquement — on veut la fenêtre de relecture du changelog avant
+# d'updater l'opérateur qui pilote 800 To de données.
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: elastic-cloud-eck
+  namespace: openshift-operators
+spec:
+  channel: stable
+  installPlanApproval: Manual
+  name: elastic-cloud-eck
+  source: certified-operators
+  sourceNamespace: openshift-marketplace
+  startingCSV: elastic-cloud-eck.v2.16.0
+  config:
+    env:
+      - name: WATCH_NAMESPACE
+        value: "elastic,elastic-monitoring"
+      - name: OPERATOR_NAMESPACE
+        value: openshift-operators

@@ -1,0 +1,17 @@
+---
+# Dashboard "Node Exporter Full" (ID 1860 sur grafana.com), un grand classique
+# pour visualiser les métriques système des nœuds OpenShift.
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: node-exporter-full
+  namespace: grafana
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: grafana
+  datasources:
+    - inputName: "DS_PROMETHEUS"
+      datasourceName: "prometheus-thanos"
+  grafanaCom:
+    id: 1860

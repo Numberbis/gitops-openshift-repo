@@ -1,0 +1,45 @@
+---
+# Fleet Server — control plane des Elastic Agent.
+#
+# 2 réplicas en Deployment (anti-affinity hostname), exposés en interne via
+# Service ClusterIP que les Agents référencent par DNS.
+#
+# Le token d'enrôlement Fleet (`fleet-server-token`) est généré par Kibana
+# au premier sync ; il est lu/persisté ensuite via la SCP.
+apiVersion: agent.k8s.elastic.co/v1alpha1
+kind: Agent
+metadata:
+  name: fleet-server
+  namespace: elastic
+spec:
+  version: 8.16.1
+  kibanaRef:
+    name: prod
+  elasticsearchRefs:
+    - name: prod
+  mode: fleet
+  fleetServerEnabled: true
+  deployment:
+    replicas: 2
+    podTemplate:
+      metadata:
+        labels:
+          tier: fleet-server
+      spec:
+        serviceAccountName: elastic-agent
+        terminationGracePeriodSeconds: 60
+        securityContext:
+          runAsNonRoot: true
+        affinity:
+          podAntiAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              - labelSelector:
+                  matchLabels:
+                    common.k8s.elastic.co/type: agent
+                    agent.k8s.elastic.co/name: fleet-server
+                topologyKey: kubernetes.io/hostname
+        containers:
+          - name: agent
+            resources:
+              requests: { cpu: "500m", memory: 1Gi }
+              limits:   { cpu: "2",    memory: 2Gi }

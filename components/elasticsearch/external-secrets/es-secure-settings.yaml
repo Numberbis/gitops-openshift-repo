@@ -1,0 +1,35 @@
+---
+# ExternalSecret : keystore Elasticsearch (« secure settings »).
+#
+# Le keystore contient tous les secrets utilisés par les *settings* ES qui
+# acceptent une référence keystore — typiquement :
+#   s3.client.default.access_key
+#   s3.client.default.secret_key
+#   xpack.notification.email.account.gmail_account.smtp.secure_password
+#   xpack.security.authc.realms.oidc.oidc-openshift.rp.client_secret
+#
+# Le secret K8s produit ici est référencé par le CR Elasticsearch :
+#   spec.secureSettings: [{secretName: es-secure-settings}]
+# ou par la StackConfigPolicy :
+#   spec.secureSettings: [{secretName: es-secure-settings}]
+#
+# ECK fait le `bin/elasticsearch-keystore add` au démarrage de chaque pod.
+# Une rotation = ESO update le secret → ECK rolling restart automatique.
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: es-secure-settings
+  namespace: elastic
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: vault-elastic
+    kind: ClusterSecretStore
+  target:
+    name: es-secure-settings
+    creationPolicy: Owner
+  dataFrom:
+    - extract:
+        # Tout le sous-arbre `secret/elastic/prod/secure-settings` devient
+        # autant de clés du Secret K8s — chaque clé est ajoutée au keystore.
+        key: elastic/prod/secure-settings

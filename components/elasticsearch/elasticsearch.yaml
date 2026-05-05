@@ -1,0 +1,316 @@
+---
+# CR Elasticsearch — cluster `prod` dimensionné pour 800 To primary,
+# mono-cluster, rétention 3-4 mois.
+#
+# ─── Hypothèses de dimensionnement ────────────────────────────────────
+#   Ingest moyen     : ~6,6 To/jour primary (~13 To/jour avec 1 réplica)
+#   Rétention totale : ~120 jours
+#   Hot              : 7 jours   →  ~49 To primary,  ~100 To avec replica
+#   Warm             : 30 jours  →  ~200 To primary, ~400 To avec replica
+#   Frozen           : ~90 jours →  ~600 To primary, en searchable_snapshots
+#                                   sur S3/ODF (PAS de réplica K8s, juste cache)
+#   Sharding cible   : ~50 GiB / shard primary, 1 réplica jusqu'au tier warm
+#   Total stockage K8s provisionné : ~520 To (hot+warm) + cache frozen
+#   Total object storage           : ~600 To
+#
+# ─── Topologie ────────────────────────────────────────────────────────
+#   3  master dédiés       (quorum, jamais collocaté)
+#   8  data_hot            (NVMe local, ingestion + recent search)
+#   16 data_warm           (RBD-SSD, search modéré)
+#   6  data_frozen         (cache 100 Gi NVMe + lecture S3)
+#   4  coordinating        (déchargent le fan-out search à grande échelle)
+#
+# ─── Règles SRE non négociables ───────────────────────────────────────
+#   * Pas de `limits.cpu` sur les data nodes (CFS throttling kill les
+#     latences search — cf. Elastic blog, 2022).
+#   * Heap = 50 % de la mémoire conteneur, plafonné à 31 GiB
+#     (compressed-oops perdu au-dessus).
+#   * Anti-affinity HARD par hostname (masters) et par zone (data).
+#   * `maxUnavailable: 1` : ECK fait un graceful drain nœud par nœud.
+#   * `vm.max_map_count = 262144` posé en MachineConfig au niveau du nœud,
+#     pas via initContainer privilégié — incompatible avec restricted-v2.
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: prod
+  namespace: elastic
+  labels:
+    env: prod                     # sélectionné par la StackConfigPolicy
+    tier: production
+spec:
+  version: 8.16.1
+  # Désactive l'init container de sysctl : posé via MachineConfig
+  # (cf. README_Elastic_Openshift.md > Spécificités OpenShift).
+  podDisruptionBudget:
+    spec:
+      maxUnavailable: 1
+      selector:
+        matchLabels:
+          elasticsearch.k8s.elastic.co/cluster-name: prod
+  updateStrategy:
+    changeBudget:
+      maxSurge: 1
+      maxUnavailable: 1
+
+  # File realm interne : on garde un user `sre-breakglass` pour les cas
+  # de panne OIDC. Les humains s'authentifient sinon via OIDC OpenShift
+  # (cf. StackConfigPolicy).
+  auth:
+    fileRealm:
+      - secretName: es-internal-users     # matérialisé par ESO
+
+  http:
+    tls:
+      certificate:
+        secretName: es-http-tls           # signé par cert-manager
+    service:
+      spec:
+        type: ClusterIP                   # exposition externe via Route OCP
+
+  # ────────────────────────────────────────────────────────────────────
+  # NodeSets — 5 rôles distincts, 37 pods au total à l'état stable.
+  # ────────────────────────────────────────────────────────────────────
+  nodeSets:
+
+    # ── Masters dédiés ────────────────────────────────────────────────
+    - name: master
+      count: 3
+      config:
+        node.roles: ["master"]
+        # Désactive ML/transform sur les masters : on a un nodeSet dédié.
+        xpack.ml.enabled: false
+        # Audit logs activés en prod (vers stdout, ramassés par Filebeat).
+        xpack.security.audit.enabled: true
+      podTemplate:
+        metadata:
+          labels:
+            tier: master
+        spec:
+          priorityClassName: elastic-master-priority
+          terminationGracePeriodSeconds: 120
+          # SCC restricted-v2 : pas de runAsUser fixe, fsGroup OK car ECK
+          # le pose pour le PVC.
+          securityContext:
+            fsGroup: 1000
+            runAsNonRoot: true
+          # Anti-affinity HARD par hostname : un nœud OpenShift = au plus
+          # un pod master. Sans ça, perte d'un nœud = perte du quorum.
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      elasticsearch.k8s.elastic.co/cluster-name: prod
+                      elasticsearch.k8s.elastic.co/statefulset-name: prod-es-master
+                  topologyKey: kubernetes.io/hostname
+          containers:
+            - name: elasticsearch
+              env:
+                - name: ES_JAVA_OPTS
+                  value: "-Xms8g -Xmx8g"
+                - name: READINESS_PROBE_TIMEOUT
+                  value: "10"
+              resources:
+                requests: { cpu: "2", memory: 16Gi }
+                limits:   { memory: 16Gi }   # PAS de limit.cpu
+              readinessProbe:
+                exec:
+                  command:
+                    - bash
+                    - -c
+                    - /mnt/elastic-internal/scripts/readiness-probe-script.sh
+                failureThreshold: 3
+                initialDelaySeconds: 10
+                periodSeconds: 12
+                successThreshold: 1
+                timeoutSeconds: 12
+      volumeClaimTemplates:
+        - metadata: { name: elasticsearch-data }
+          spec:
+            accessModes: [ReadWriteOnce]
+            resources: { requests: { storage: 50Gi } }
+            storageClassName: ocs-storagecluster-ceph-rbd
+
+    # ── Data hot (NVMe local) ─────────────────────────────────────────
+    # 8 nodes × 16 TiB = 128 TiB capacity, ~92 TiB nécessaires (réplique
+    # comprise), ~30 % de headroom pour merge / segment overhead.
+    - name: data-hot
+      count: 8
+      config:
+        node.roles: ["data_hot", "data_content", "ingest"]
+        node.attr.tier: hot
+        # Indexation soutenue : on monte le thread pool write.
+        thread_pool.write.queue_size: 10000
+        # Slow log indexing pour détecter les goulots tôt.
+        index.indexing.slowlog.threshold.index.warn: "10s"
+      podTemplate:
+        metadata:
+          labels:
+            tier: hot
+        spec:
+          priorityClassName: elastic-data-priority
+          terminationGracePeriodSeconds: 600       # graceful shutdown ES
+          securityContext:
+            fsGroup: 1000
+            runAsNonRoot: true
+          # Pool de nœuds OpenShift dédiés Elastic data hot, taintés.
+          tolerations:
+            - { key: workload, value: elastic-data-hot, effect: NoSchedule }
+          nodeSelector:
+            node-role.kubernetes.io/elastic-data-hot: ""
+          # Anti-affinity HARD par zone : pas deux pods hot dans la même AZ.
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      elasticsearch.k8s.elastic.co/cluster-name: prod
+                      elasticsearch.k8s.elastic.co/statefulset-name: prod-es-data-hot
+                  topologyKey: topology.kubernetes.io/zone
+          containers:
+            - name: elasticsearch
+              env:
+                - name: ES_JAVA_OPTS
+                  value: "-Xms31g -Xmx31g"     # max compressed-oops
+              resources:
+                requests: { cpu: "8", memory: 64Gi }
+                limits:   { memory: 64Gi }     # PAS de limit.cpu
+      volumeClaimTemplates:
+        - metadata: { name: elasticsearch-data }
+          spec:
+            accessModes: [ReadWriteOnce]
+            resources: { requests: { storage: 16Ti } }
+            storageClassName: nvme-local       # ⚠ StorageClass Local PV
+                                               #   sur NVMe nœud-local
+
+    # ── Data warm (RBD-SSD) ───────────────────────────────────────────
+    # 16 nodes × 32 TiB = 512 TiB, ~420 TiB nécessaires (replica inclus).
+    - name: data-warm
+      count: 16
+      config:
+        node.roles: ["data_warm"]
+        node.attr.tier: warm
+      podTemplate:
+        metadata:
+          labels:
+            tier: warm
+        spec:
+          priorityClassName: elastic-data-priority
+          terminationGracePeriodSeconds: 1800
+          securityContext:
+            fsGroup: 1000
+            runAsNonRoot: true
+          tolerations:
+            - { key: workload, value: elastic-data-warm, effect: NoSchedule }
+          nodeSelector:
+            node-role.kubernetes.io/elastic-data-warm: ""
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      elasticsearch.k8s.elastic.co/cluster-name: prod
+                      elasticsearch.k8s.elastic.co/statefulset-name: prod-es-data-warm
+                  topologyKey: topology.kubernetes.io/zone
+          containers:
+            - name: elasticsearch
+              env:
+                - name: ES_JAVA_OPTS
+                  value: "-Xms31g -Xmx31g"
+              resources:
+                requests: { cpu: "8", memory: 64Gi }
+                limits:   { memory: 64Gi }
+      volumeClaimTemplates:
+        - metadata: { name: elasticsearch-data }
+          spec:
+            accessModes: [ReadWriteOnce]
+            resources: { requests: { storage: 32Ti } }
+            storageClassName: ocs-storagecluster-ceph-rbd-ssd
+
+    # ── Data frozen (searchable_snapshots, cache local seulement) ─────
+    # 6 nodes × ~100 GiB cache = ~600 GiB cache total. Les *données*
+    # vivent dans S3/ODF, pas dans le PV.
+    - name: data-frozen
+      count: 6
+      config:
+        node.roles: ["data_frozen"]
+        node.attr.tier: frozen
+        # Taille du cache shared on-disk (snapshots searchables).
+        # 70 % du PV pour laisser du headroom OS.
+        xpack.searchable.snapshot.shared_cache.size: "70GB"
+      podTemplate:
+        metadata:
+          labels:
+            tier: frozen
+        spec:
+          priorityClassName: elastic-data-priority
+          terminationGracePeriodSeconds: 600
+          securityContext:
+            fsGroup: 1000
+            runAsNonRoot: true
+          tolerations:
+            - { key: workload, value: elastic-data-frozen, effect: NoSchedule }
+          nodeSelector:
+            node-role.kubernetes.io/elastic-data-frozen: ""
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      elasticsearch.k8s.elastic.co/cluster-name: prod
+                      elasticsearch.k8s.elastic.co/statefulset-name: prod-es-data-frozen
+                  topologyKey: topology.kubernetes.io/zone
+          containers:
+            - name: elasticsearch
+              env:
+                - name: ES_JAVA_OPTS
+                  value: "-Xms16g -Xmx16g"
+              resources:
+                requests: { cpu: "4", memory: 32Gi }
+                limits:   { memory: 32Gi }
+      volumeClaimTemplates:
+        - metadata: { name: elasticsearch-data }
+          spec:
+            accessModes: [ReadWriteOnce]
+            resources: { requests: { storage: 100Gi } }   # CACHE, pas data
+            storageClassName: nvme-local
+
+    # ── Coordinating (search fan-out) ─────────────────────────────────
+    # À 800 To et > 30 data nodes, un search « match_all » fan-out sur
+    # tous les shards : on dédie des nœuds coordinating pour ne pas saturer
+    # la heap des data nodes avec l'agrégation des résultats.
+    - name: coordinating
+      count: 4
+      config:
+        node.roles: []                         # vide = coordinating only
+      podTemplate:
+        metadata:
+          labels:
+            tier: coordinating
+        spec:
+          terminationGracePeriodSeconds: 60
+          securityContext:
+            fsGroup: 1000
+            runAsNonRoot: true
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      elasticsearch.k8s.elastic.co/cluster-name: prod
+                      elasticsearch.k8s.elastic.co/statefulset-name: prod-es-coordinating
+                  topologyKey: kubernetes.io/hostname
+          containers:
+            - name: elasticsearch
+              env:
+                - name: ES_JAVA_OPTS
+                  value: "-Xms8g -Xmx8g"
+              resources:
+                requests: { cpu: "4", memory: 16Gi }
+                limits:   { memory: 16Gi }
+      volumeClaimTemplates:
+        - metadata: { name: elasticsearch-data }
+          spec:
+            accessModes: [ReadWriteOnce]
+            resources: { requests: { storage: 20Gi } }
+            storageClassName: ocs-storagecluster-ceph-rbd

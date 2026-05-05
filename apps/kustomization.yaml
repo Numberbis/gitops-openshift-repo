@@ -1,0 +1,18 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  # Stack monitoring OpenShift native (Prom/Alertmanager/Grafana) — waves 1→3
+  - 01-cluster-monitoring-app.yaml
+  - 02-grafana-operator-app.yaml
+  - 03-grafana-instance-app.yaml
+  # Stack Elastic hybride (ECK + GitOps) — waves 9→14
+  # Voir README_Elastic_Openshift.md pour la stratégie 4-couches.
+  # Wave 9 — Préparation des nœuds (MachineConfig sysctl + LocalVolume NVMe).
+  #          Sync MANUEL : un MachineConfig redémarre les nœuds.
+  - 09-node-prep-app.yaml
+  - 10-eck-operator-app.yaml
+  - 11-elastic-platform-app.yaml
+  - 12-elasticsearch-app.yaml
+  - 13-stackconfig-app.yaml
+  - 14-elastic-agents-app.yaml

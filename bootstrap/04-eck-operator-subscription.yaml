@@ -1,0 +1,34 @@
+---
+# Souscription à l'opérateur Elastic Cloud on Kubernetes (ECK), publié par
+# Elastic et certifié Red Hat. Cet opérateur réconcilie les CR
+# Elasticsearch / Kibana / Agent / Beat / EnterpriseSearch / StackConfigPolicy.
+#
+# Pourquoi `installPlanApproval: Manual` : un bug d'opérateur sur un cluster
+# de 800 To peut bloquer la totalité de la stack (rolling upgrade interrompu,
+# CR coincés en `Reconciling`). On veut donc lire le changelog ECK et
+# approuver chaque mise à jour à la main.
+#
+# Pourquoi `startingCSV` épinglé : interdiction du `latest` implicite sur
+# une plateforme de cette criticité.
+#
+# `WATCH_NAMESPACE` est restreint aux namespaces où vivent réellement les CR
+# Elastic — sur un OpenShift partagé, on évite que l'opérateur charge la
+# liste des objets de tout le cluster.
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: elastic-cloud-eck
+  namespace: openshift-operators
+spec:
+  channel: stable
+  installPlanApproval: Manual
+  name: elastic-cloud-eck
+  source: certified-operators
+  sourceNamespace: openshift-marketplace
+  startingCSV: elastic-cloud-eck.v2.16.0
+  config:
+    env:
+      - name: WATCH_NAMESPACE
+        value: "elastic,elastic-monitoring"
+      - name: OPERATOR_NAMESPACE
+        value: openshift-operators

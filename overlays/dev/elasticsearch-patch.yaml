@@ -1,0 +1,39 @@
+---
+# Patch DEV : remplace intégralement la liste `nodeSets` par une version
+# minuscule (1 master + 1 data all-roles), retire les nodeSelectors/
+# tolerations qui supposent un cluster avec des pools dédiés.
+#
+# Strategic merge patch : Kustomize remplace la liste `nodeSets` parce
+# qu'on lui donne `$patch: replace`.
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: prod
+spec:
+  nodeSets:
+    - $patch: replace
+    - name: all-in-one
+      count: 1
+      config:
+        node.roles: ["master", "data", "ingest", "remote_cluster_client"]
+        # Search cache shared (tier frozen indispo en dev) — on désactive.
+        xpack.searchable.snapshot.shared_cache.size: "0"
+      podTemplate:
+        spec:
+          securityContext:
+            fsGroup: 1000
+            runAsNonRoot: true
+          containers:
+            - name: elasticsearch
+              env:
+                - name: ES_JAVA_OPTS
+                  value: "-Xms2g -Xmx2g"
+              resources:
+                requests: { cpu: "500m", memory: 4Gi }
+                limits:   { memory: 4Gi }
+      volumeClaimTemplates:
+        - metadata: { name: elasticsearch-data }
+          spec:
+            accessModes: [ReadWriteOnce]
+            resources: { requests: { storage: 50Gi } }
+            storageClassName: ocs-storagecluster-ceph-rbd

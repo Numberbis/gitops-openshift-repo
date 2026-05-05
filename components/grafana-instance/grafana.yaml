@@ -1,0 +1,48 @@
+---
+# Instance Grafana gérée par le Grafana Operator (v5).
+# Documentation : https://grafana-operator.github.io/grafana-operator/
+#
+# - route activée pour exposer Grafana en dehors du cluster via une Route OCP.
+# - admin user/password définis via env (à durcir avec un Secret en production).
+# - sidecar de découverte des dashboards/datasources désactivé : on déclare
+#   tout en GitOps pour rester déterministe.
+apiVersion: grafana.integreatly.org/v1beta1
+kind: Grafana
+metadata:
+  name: grafana
+  namespace: grafana
+  labels:
+    dashboards: grafana
+    datasources: grafana
+spec:
+  config:
+    log:
+      mode: "console"
+    auth:
+      disable_login_form: "false"
+    auth.anonymous:
+      enabled: "false"
+    security:
+      admin_user: admin
+      # >>> CHANGEZ CE MOT DE PASSE en production (utiliser un Secret + valueFrom)
+      admin_password: "ChangeMe123!"
+    server:
+      root_url: "%(protocol)s://%(domain)s/"
+  deployment:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: grafana
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+  route:
+    spec:
+      tls:
+        termination: edge
+        insecureEdgeTerminationPolicy: Redirect
