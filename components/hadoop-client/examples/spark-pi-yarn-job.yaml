@@ -1,0 +1,70 @@
+---
+# EXEMPLE (non synchronisé par ArgoCD) — Job Kubernetes qui soumet un
+# SparkPi au cluster YARN en mode cluster : le driver ET les executors
+# tournent dans des containers YARN sur les NodeManagers, le pod ne fait
+# que la soumission puis suit l'avancement.
+#
+#   oc apply -f components/hadoop-client/examples/spark-pi-yarn-job.yaml
+#   oc -n hadoop logs -f job/spark-pi-yarn
+#
+# Prérequis (une seule fois, depuis le pod hadoop-edge) :
+#   hdfs dfs -mkdir -p /user/hadoop        # staging dir Spark
+#   hdfs dfs -mkdir -p /tmp/logs           # log aggregation YARN
+#
+# Au premier lancement, spark-submit zippe $SPARK_HOME/jars et l'upload
+# dans HDFS (staging) : compter 1-2 min de plus.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: spark-pi-yarn
+  namespace: hadoop
+  labels:
+    app.kubernetes.io/part-of: hadoop
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spark-pi-yarn
+        app.kubernetes.io/part-of: hadoop
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: spark-submit
+          # Image Spark officielle : contient spark-submit + les libs
+          # client Hadoop 3. La config cluster vient du volume monté.
+          image: apache/spark:3.5.4
+          command:
+            - /opt/spark/bin/spark-submit
+            - --master=yarn
+            - --deploy-mode=cluster
+            - --class=org.apache.spark.examples.SparkPi
+            - --num-executors=2
+            - --executor-memory=1g
+            - --executor-cores=1
+            - --driver-memory=1g
+            - local:///opt/spark/examples/jars/spark-examples_2.12-3.5.4.jar
+            - "1000"
+          env:
+            - { name: HADOOP_CONF_DIR, value: /etc/hadoop/conf }
+            - { name: YARN_CONF_DIR, value: /etc/hadoop/conf }
+            - { name: HADOOP_USER_NAME, value: hadoop }
+          resources:
+            requests: { cpu: 250m, memory: 1Gi }
+            limits:   { cpu: "1",  memory: 2Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: hadoop-config, mountPath: /etc/hadoop/conf, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: hadoop-config
+          configMap: { name: hadoop-config }
+        - name: tmp
+          emptyDir: {}

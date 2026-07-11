@@ -1,0 +1,116 @@
+---
+# Service headless des NodeManagers.
+apiVersion: v1
+kind: Service
+metadata:
+  name: yarn-nodemanager
+  namespace: hadoop
+  labels:
+    app.kubernetes.io/name: yarn-nodemanager
+    app.kubernetes.io/component: nodemanager
+    app.kubernetes.io/part-of: hadoop
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: yarn-nodemanager
+  ports:
+    - { name: http,    port: 8042,  targetPort: 8042 }
+    - { name: shuffle, port: 13562, targetPort: 13562 }
+---
+# NodeManagers YARN — 3 replicas.
+#
+# C'est LA capacité de calcul du cluster : les executors Spark et les
+# TaskManagers Flink tournent DANS ces pods, en tant que processus JVM
+# lancés par le NodeManager (pas en tant que pods Kubernetes).
+#
+# Pour ajouter de la capacité : scaler ce StatefulSet. Chaque replica
+# ajoute `yarn.nodemanager.resource.memory-mb` (6 Gi) et 4 vcores au
+# pool YARN.
+#
+# ⚠ COHÉRENCE ressources : limits ≥ resource.memory-mb (6144) + heap du
+#   NM lui-même (~1 Gi) + marge. Si vous changez l'un, changez l'autre
+#   (hadoop-config, yarn-site.xml).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: yarn-nodemanager
+  namespace: hadoop
+  labels:
+    app.kubernetes.io/name: yarn-nodemanager
+    app.kubernetes.io/component: nodemanager
+    app.kubernetes.io/part-of: hadoop
+spec:
+  serviceName: yarn-nodemanager
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: yarn-nodemanager
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: yarn-nodemanager
+        app.kubernetes.io/component: nodemanager
+        app.kubernetes.io/part-of: hadoop
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      # Étale les NodeManagers sur les nœuds physiques : un nœud perdu
+      # ne coûte qu'un tiers de la capacité de calcul.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: yarn-nodemanager
+      containers:
+        - name: nodemanager
+          image: apache/hadoop:3.4.1
+          command: ["yarn", "nodemanager"]
+          env:
+            - { name: HADOOP_CONF_DIR, value: /etc/hadoop/conf }
+            - { name: HADOOP_USER_NAME, value: hadoop }
+            - { name: HADOOP_HEAPSIZE_MAX, value: 1g }
+          ports:
+            - { name: http,    containerPort: 8042 }
+            - { name: shuffle, containerPort: 13562 }
+          readinessProbe:
+            httpGet: { path: /ws/v1/node/info, port: 8042 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /ws/v1/node/info, port: 8042 }
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 5
+          resources:
+            # 8 Gi = 6144 Mo annoncés à YARN + ~1 Gi heap NM + marge.
+            requests: { cpu: "1", memory: 7Gi }
+            limits:   { cpu: "4", memory: 8Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: hadoop-config, mountPath: /etc/hadoop/conf, readOnly: true }
+            # Répertoires de travail YARN (shuffle Spark, state Flink,
+            # jars localisés) : éphémères, un emptyDir suffit — les
+            # données de longue durée vivent dans HDFS.
+            - { name: yarn-local, mountPath: /hadoop/yarn/local }
+            - { name: yarn-logs, mountPath: /hadoop/yarn/logs }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: hadoop-config
+          configMap: { name: hadoop-config }
+        - name: yarn-local
+          emptyDir:
+            sizeLimit: 20Gi
+        - name: yarn-logs
+          emptyDir:
+            sizeLimit: 5Gi
+        - name: tmp
+          emptyDir: {}

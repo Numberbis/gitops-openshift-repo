@@ -1,0 +1,73 @@
+---
+# Wave 32 — Flink Kubernetes Operator (Apache, officiel), via son chart
+# Helm servi par les miroirs Apache.
+#
+# Rôle : réconcilie les CRs `FlinkDeployment` / `FlinkSessionJob` du
+# namespace `data-jobs`. C'est LA brique clé pour des pipelines 24/7 :
+#   - HA JobManager native Kubernetes (leader election + métadonnées
+#     dans des ConfigMaps),
+#   - upgrades **sans perte d'état** : sur un changement de spec commité,
+#     l'opérateur déclenche un savepoint, arrête le job, redéploie et
+#     restaure (upgradeMode: savepoint),
+#   - redémarrages et rollbacks automatiques.
+#
+# PRÉREQUIS : cert-manager (bootstrap/06-cert-manager-subscription.yaml)
+# — le webhook d'admission de l'opérateur en a besoin pour son certificat.
+#
+# ⚠ repoURL : `downloads.apache.org` ne garde QUE la dernière version ;
+#   `archive.apache.org` les garde toutes → on pointe sur archive pour
+#   que le déploiement reste reproductible. Pour un bump de version,
+#   changer le numéro dans repoURL ET targetRevision.
+#
+# ⚠ ServerSideApply=true OBLIGATOIRE : la CRD FlinkDeployment dépasse la
+#   limite des 256 KiB de l'annotation last-applied-configuration
+#   (même problème que le CR Elasticsearch, wave 12).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: flink-operator
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "32"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://archive.apache.org/dist/flink/flink-kubernetes-operator-1.10.0/
+    chart: flink-kubernetes-operator
+    targetRevision: 1.10.0
+    helm:
+      releaseName: flink-kubernetes-operator
+      values: |
+        # Namespaces surveillés pour les CRs FlinkDeployment.
+        watchNamespaces:
+          - data-jobs
+        # Le chart fixe runAsUser/runAsGroup 9999, hors de la plage UID
+        # du namespace → rejeté par la SCC restricted-v2. `null` supprime
+        # le bloc : OpenShift assigne lui-même un UID arbitraire valide.
+        podSecurityContext: null
+        defaultConfiguration:
+          create: true
+          append: true
+          flink-conf.yaml: |+
+            # Valeurs par défaut héritées par tous les FlinkDeployments
+            # (surchargées par flinkConfiguration dans chaque CR).
+            kubernetes.operator.reconcile.interval: 15 s
+            kubernetes.operator.savepoint.history.max.count: 5
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: flink-operator
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 10m

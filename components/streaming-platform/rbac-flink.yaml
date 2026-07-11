@@ -1,0 +1,48 @@
+---
+# ServiceAccount utilisé par les pods des FlinkDeployments
+# (spec.serviceAccount: flink dans chaque CR).
+#
+# Le RBAC équivalent côté Spark n'est PAS ici : le chart Helm du Spark
+# Operator (wave 31) crée lui-même le SA `spark-operator-spark` + Role
+# dans chaque namespace de `spark.jobNamespaces`.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flink
+  namespace: data-jobs
+  labels:
+    app.kubernetes.io/part-of: streaming-platform
+---
+# Le JobManager Flink (mode natif Kubernetes) pilote lui-même ses
+# ressources : il crée les pods TaskManager, et stocke les métadonnées
+# HA (leader election, job graph pointers) dans des ConfigMaps.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flink
+  namespace: data-jobs
+  labels:
+    app.kubernetes.io/part-of: streaming-platform
+rules:
+  - apiGroups: [""]
+    resources: [pods, configmaps, services]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [apps]
+    resources: [deployments, deployments/finalizers]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: flink
+  namespace: data-jobs
+  labels:
+    app.kubernetes.io/part-of: streaming-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: flink
+subjects:
+  - kind: ServiceAccount
+    name: flink
+    namespace: data-jobs

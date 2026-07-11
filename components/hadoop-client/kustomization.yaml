@@ -1,0 +1,7 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - edge-node.yaml
+# Les manifests dans examples/ ne sont volontairement PAS synchronisés :
+# ce sont des jobs one-shot à lancer à la main (oc apply -f ...).

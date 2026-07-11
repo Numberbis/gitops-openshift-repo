@@ -1,0 +1,66 @@
+---
+# TEMPLATE — Job Spark Structured Streaming 24h/24.
+#
+# Copier dans components/streaming-platform/jobs/, adapter, référencer
+# dans kustomization.yaml. L'opérateur soumet le driver en pod, qui crée
+# ses executors en pods ; `restartPolicy: Always` garantit la relance en
+# cas de crash — la reprise exactement-où-on-en-était vient du
+# checkpointing Structured Streaming dans S3.
+#
+# Prérequis :
+#   - image custom : apache/spark:3.5.x + jar du job + hadoop-aws
+#     (l'image officielle n'embarque PAS le connecteur s3a — voir
+#     Dockerfile dans README_Flink_Spark.md),
+#   - Secret `spark-s3-credentials` (AWS_ACCESS_KEY_ID /
+#     AWS_SECRET_ACCESS_KEY), créé hors Git.
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: mon-job-streaming-spark
+  namespace: data-jobs
+  labels:
+    app.kubernetes.io/part-of: streaming-platform
+spec:
+  type: Scala
+  mode: cluster
+  image: registry.example.com/data/mon-job-spark:1.0.0
+  mainClass: com.exemple.MonJobStreaming
+  mainApplicationFile: local:///opt/spark/app/mon-job.jar
+  sparkVersion: 3.5.4
+
+  # ★ Relance automatique permanente — le réglage clé pour du 24/7.
+  restartPolicy:
+    type: Always
+    onFailureRetryInterval: 15
+    onSubmissionFailureRetryInterval: 30
+
+  sparkConf:
+    # Checkpointing Structured Streaming : la reprise d'état (offsets
+    # Kafka, agrégations) vit dans S3, plus dans HDFS.
+    spark.sql.streaming.checkpointLocation: s3a://spark-state/checkpoints/mon-job
+    # Endpoint S3 interne (ODF/MinIO) — PLACEHOLDERS
+    spark.hadoop.fs.s3a.endpoint: https://s3.openshift-storage.svc:443
+    spark.hadoop.fs.s3a.path.style.access: "true"
+    # Les executors perdus (éviction, nœud down) sont recréés par le
+    # driver ; le job continue dégradé au lieu de tomber.
+    spark.executor.instances: "2"
+    spark.dynamicAllocation.enabled: "false"
+
+  driver:
+    cores: 1
+    memory: 2g
+    serviceAccount: spark-operator-spark   # créé par le chart (wave 31)
+    envFrom:
+      - secretRef:
+          name: spark-s3-credentials
+    labels:
+      app.kubernetes.io/part-of: streaming-platform
+  executor:
+    instances: 2
+    cores: 2
+    memory: 4g
+    envFrom:
+      - secretRef:
+          name: spark-s3-credentials
+    labels:
+      app.kubernetes.io/part-of: streaming-platform

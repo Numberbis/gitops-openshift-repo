@@ -1,0 +1,47 @@
+---
+# Wave 21 — Couche 2 « Cluster HDFS ».
+#
+# Déploie le système de fichiers distribué :
+#   - StatefulSet NameNode (1 replica, non-HA — voir README pour l'évolution
+#     vers un NameNode HA avec JournalNodes + ZooKeeper),
+#   - StatefulSet DataNodes (3 replicas, PVC par pod),
+#   - Services headless (DNS stables requis par HDFS),
+#   - Route OpenShift vers l'UI du NameNode (port 9870).
+#
+# Wave 21 doit s'exécuter APRÈS 20 : le namespace, la ConfigMap
+# `hadoop-config` et les NetworkPolicies doivent exister.
+#
+# `prune: false` : on ne supprime JAMAIS automatiquement un composant
+# stateful qui porte les données — même philosophie que l'app
+# `elasticsearch` (wave 12).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hdfs
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "21"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://gitlab.com/Numberbis/gitops-openshift-repo.git
+    targetRevision: main
+    path: components/hdfs
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hadoop
+  syncPolicy:
+    automated:
+      prune: false   # ne JAMAIS auto-prune le stockage HDFS
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 10m

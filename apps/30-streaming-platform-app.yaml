@@ -1,0 +1,46 @@
+---
+# Wave 30 — Couche 1 « Plateforme streaming » (jobs Spark/Flink 24/7).
+#
+# Pose les fondations qui doivent exister AVANT les opérateurs :
+#   - namespace `data-jobs` : là où tournent TOUS les jobs (les opérateurs
+#     des waves 31/32 sont configurés pour surveiller ce namespace, et le
+#     chart Spark y crée du RBAC → il doit exister d'abord),
+#   - ServiceAccount + RBAC `flink` (requis par les pods FlinkDeployment),
+#   - NetworkPolicies (deny-all + ouvertures explicites).
+#
+# Les jobs eux-mêmes sont des CRs SparkApplication / FlinkDeployment :
+# des templates prêts pour la prod sont dans
+# components/streaming-platform/examples/ (non synchronisés — les copier
+# dans le composant et les référencer dans kustomization.yaml pour les
+# passer en GitOps, cf. README_Flink_Spark.md).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: streaming-platform
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "30"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://gitlab.com/Numberbis/gitops-openshift-repo.git
+    targetRevision: main
+    path: components/streaming-platform
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: data-jobs
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

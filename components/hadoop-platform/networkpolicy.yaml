@@ -1,0 +1,103 @@
+---
+# NetworkPolicy par défaut « deny-all » : aucun trafic n'entre/sort du
+# namespace `hadoop` sauf ce que les NetworkPolicies suivantes autorisent
+# explicitement. Même philosophie que le namespace `elastic`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: hadoop
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Trafic intra-namespace : les daemons Hadoop communiquent énormément
+# entre eux (NameNode ↔ DataNodes, RM ↔ NodeManagers, containers YARN
+# ↔ tout le monde) sur des ports en partie DYNAMIQUES (les
+# ApplicationMasters Spark/Flink écoutent sur des ports éphémères).
+# Il est donc impossible d'énumérer les ports : on autorise tout le
+# trafic entre pods du namespace `hadoop`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-hadoop-internal
+  namespace: hadoop
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector: {}
+  egress:
+    - to:
+        - podSelector: {}
+---
+# Routeur OpenShift → UIs web (NameNode 9870, ResourceManager 8088,
+# NodeManager 8042, DataNode 9864). Nécessaire pour les Routes.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-router-to-uis
+  namespace: hadoop
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              policy-group.network.openshift.io/ingress: ""
+      ports:
+        - { protocol: TCP, port: 9870 }   # NameNode UI
+        - { protocol: TCP, port: 8088 }   # ResourceManager UI
+        - { protocol: TCP, port: 8042 }   # NodeManager UI
+        - { protocol: TCP, port: 9864 }   # DataNode UI
+---
+# Clients externes au namespace : tout namespace portant le label
+# `hadoop-client: "true"` peut atteindre les endpoints de soumission
+# et de lecture/écriture HDFS. Poser ce label sur les namespaces des
+# applications qui consomment le cluster :
+#   oc label namespace mon-appli hadoop-client=true
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-external-clients
+  namespace: hadoop
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              hadoop-client: "true"
+      ports:
+        - { protocol: TCP, port: 8020 }   # NameNode RPC
+        - { protocol: TCP, port: 9866 }   # DataNode data transfer
+        - { protocol: TCP, port: 9867 }   # DataNode IPC
+        - { protocol: TCP, port: 8032 }   # RM client (soumission jobs)
+        - { protocol: TCP, port: 8030 }   # RM scheduler (ApplicationMasters)
+        - { protocol: TCP, port: 8031 }   # RM resource-tracker
+---
+# Egress DNS : indispensable, HDFS/YARN reposent entièrement sur la
+# résolution des noms stables des StatefulSets.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-dns
+  namespace: hadoop
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-dns
+      ports:
+        - { protocol: UDP, port: 5353 }
+        - { protocol: TCP, port: 5353 }

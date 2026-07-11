@@ -1,0 +1,18 @@
+---
+# Namespace dédié à la stack Hadoop (HDFS + YARN + clients Spark/Flink).
+#
+# Conventions :
+#   - Un namespace = un cluster Hadoop logique (même règle que `elastic`).
+#   - PodSecurity `restricted` : tous les daemons Hadoop tournent en
+#     non-root avec l'UID arbitraire assigné par OpenShift (SCC
+#     restricted-v2). La compatibilité UID arbitraire est gérée par
+#     l'env `HADOOP_USER_NAME` posée sur chaque container (cf. README).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hadoop
+  labels:
+    name: hadoop
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

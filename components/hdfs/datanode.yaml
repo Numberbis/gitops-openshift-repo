@@ -1,0 +1,116 @@
+---
+# Service headless des DataNodes : identités DNS stables pour chaque pod
+# (hdfs-datanode-0.hdfs-datanode…, -1, -2).
+apiVersion: v1
+kind: Service
+metadata:
+  name: hdfs-datanode
+  namespace: hadoop
+  labels:
+    app.kubernetes.io/name: hdfs-datanode
+    app.kubernetes.io/component: datanode
+    app.kubernetes.io/part-of: hadoop
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: hdfs-datanode
+  ports:
+    - { name: data, port: 9866, targetPort: 9866 }
+    - { name: ipc,  port: 9867, targetPort: 9867 }
+    - { name: http, port: 9864, targetPort: 9864 }
+---
+# DataNodes HDFS — 3 replicas, un PVC par pod.
+#
+# C'est LA capacité de stockage du cluster : pour l'augmenter, scaler ce
+# StatefulSet (le NameNode rééquilibre progressivement) ET vérifier la
+# cohérence de dfs.replication dans hadoop-config.
+#
+# Décommissionnement propre avant un scale-down : voir
+# README_Hadoop_Openshift.md § Troubleshooting — ne jamais réduire
+# brutalement de plus de (replicas - dfs.replication) pods.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: hdfs-datanode
+  namespace: hadoop
+  labels:
+    app.kubernetes.io/name: hdfs-datanode
+    app.kubernetes.io/component: datanode
+    app.kubernetes.io/part-of: hadoop
+spec:
+  serviceName: hdfs-datanode
+  replicas: 3
+  podManagementPolicy: Parallel   # les DN sont indépendants, pas d'ordre requis
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hdfs-datanode
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hdfs-datanode
+        app.kubernetes.io/component: datanode
+        app.kubernetes.io/part-of: hadoop
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      # Un DataNode par nœud OpenShift autant que possible : perdre un
+      # nœud physique ne doit coûter qu'UNE réplique de chaque bloc.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: hdfs-datanode
+      containers:
+        - name: datanode
+          image: apache/hadoop:3.4.1
+          command: ["hdfs", "datanode"]
+          env:
+            - { name: HADOOP_CONF_DIR, value: /etc/hadoop/conf }
+            - { name: HADOOP_USER_NAME, value: hadoop }
+            - { name: HADOOP_HEAPSIZE_MAX, value: 1g }
+          ports:
+            - { name: data, containerPort: 9866 }
+            - { name: ipc,  containerPort: 9867 }
+            - { name: http, containerPort: 9864 }
+          readinessProbe:
+            httpGet: { path: /, port: 9864 }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: 9864 }
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 5
+          resources:
+            requests: { cpu: 250m, memory: 1Gi }
+            limits:   { cpu: "1",  memory: 2Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: hadoop-config, mountPath: /etc/hadoop/conf, readOnly: true }
+            - { name: data, mountPath: /hadoop/dfs/data }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: hadoop-config
+          configMap: { name: hadoop-config }
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    # Blocs de données. 100 Gi/pod = 300 Gi bruts, soit ~150 Gi utiles
+    # avec dfs.replication=2. Dimensionner selon le besoin réel.
+    # Option perfo : StorageClass `nvme-local` (components/node-prep).
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 100Gi
+        # storageClassName: nvme-local

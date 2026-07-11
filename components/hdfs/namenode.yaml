@@ -1,0 +1,134 @@
+---
+# Service headless du NameNode : fournit le nom DNS stable
+# `hdfs-namenode-0.hdfs-namenode.hadoop.svc.cluster.local` référencé par
+# fs.defaultFS dans core-site.xml. publishNotReadyAddresses=true pour que
+# le nom résolve pendant le démarrage (les DataNodes retentent, mais ça
+# accélère la convergence).
+apiVersion: v1
+kind: Service
+metadata:
+  name: hdfs-namenode
+  namespace: hadoop
+  labels:
+    app.kubernetes.io/name: hdfs-namenode
+    app.kubernetes.io/component: namenode
+    app.kubernetes.io/part-of: hadoop
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: hdfs-namenode
+  ports:
+    - { name: rpc,  port: 8020, targetPort: 8020 }
+    - { name: http, port: 9870, targetPort: 9870 }
+---
+# NameNode HDFS — 1 replica, non-HA.
+#
+# Choix assumé pour un cluster minimal : le NameNode est un SPOF, mais le
+# StatefulSet le replanifie automatiquement (les métadonnées survivent sur
+# le PVC). Pour une vraie HA il faut 2-3 NameNodes + 3 JournalNodes +
+# ZooKeeper — voir README_Hadoop_Openshift.md § Évolution vers la HA.
+#
+# ⚠ Ne JAMAIS passer replicas à 2 sur CE StatefulSet : deux NameNodes
+#   non-HA sur le même fsimage = corruption garantie.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: hdfs-namenode
+  namespace: hadoop
+  labels:
+    app.kubernetes.io/name: hdfs-namenode
+    app.kubernetes.io/component: namenode
+    app.kubernetes.io/part-of: hadoop
+spec:
+  serviceName: hdfs-namenode
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hdfs-namenode
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hdfs-namenode
+        app.kubernetes.io/component: namenode
+        app.kubernetes.io/part-of: hadoop
+    spec:
+      # SCC restricted-v2 : UID arbitraire, fsGroup posé automatiquement
+      # par OpenShift → le PVC est accessible en écriture au groupe.
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Formate le fsimage au TOUT PREMIER démarrage uniquement
+        # (présence du fichier VERSION = déjà formaté, on ne touche à rien).
+        - name: format-namenode
+          image: apache/hadoop:3.4.1
+          command:
+            - /bin/bash
+            - -c
+            - |
+              if [ ! -f /hadoop/dfs/name/current/VERSION ]; then
+                echo "Premier démarrage : formatage du NameNode"
+                hdfs namenode -format -nonInteractive hadoop-openshift
+              else
+                echo "NameNode déjà formaté, rien à faire"
+              fi
+          env:
+            - { name: HADOOP_CONF_DIR, value: /etc/hadoop/conf }
+            - { name: HADOOP_USER_NAME, value: hadoop }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: hadoop-config, mountPath: /etc/hadoop/conf, readOnly: true }
+            - { name: name, mountPath: /hadoop/dfs/name }
+      containers:
+        - name: namenode
+          image: apache/hadoop:3.4.1
+          command: ["hdfs", "namenode"]
+          env:
+            - { name: HADOOP_CONF_DIR, value: /etc/hadoop/conf }
+            # L'UID arbitraire d'OpenShift n'a pas d'entrée passwd :
+            # HADOOP_USER_NAME fixe l'identité Hadoop (auth `simple`).
+            - { name: HADOOP_USER_NAME, value: hadoop }
+            - { name: HADOOP_HEAPSIZE_MAX, value: 1g }
+          ports:
+            - { name: rpc,  containerPort: 8020 }
+            - { name: http, containerPort: 9870 }
+          readinessProbe:
+            httpGet: { path: /, port: 9870 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: 9870 }
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 5
+          resources:
+            requests: { cpu: 250m, memory: 1536Mi }
+            limits:   { cpu: "1",  memory: 2Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: hadoop-config, mountPath: /etc/hadoop/conf, readOnly: true }
+            - { name: name, mountPath: /hadoop/dfs/name }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: hadoop-config
+          configMap: { name: hadoop-config }
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    # Métadonnées HDFS (fsimage + edits) : petites mais CRITIQUES.
+    # storageClassName omis = StorageClass par défaut du cluster.
+    # Option perfo : `nvme-local` produite par components/node-prep.
+    - metadata:
+        name: name
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 10Gi
+        # storageClassName: nvme-local

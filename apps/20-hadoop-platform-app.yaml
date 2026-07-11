@@ -1,0 +1,44 @@
+---
+# Wave 20 — Couche 1 « Plateforme Hadoop ».
+#
+# Pose les éléments transverses qui doivent exister AVANT de déployer
+# HDFS (wave 21) et YARN (wave 22) :
+#   - namespace `hadoop` (PodSecurity restricted),
+#   - ConfigMap `hadoop-config` : la configuration Hadoop COMPLÈTE
+#     (core-site, hdfs-site, yarn-site, mapred-site, capacity-scheduler,
+#     log4j) partagée par tous les daemons ET les clients Spark/Flink,
+#   - NetworkPolicies (deny-all + ouvertures explicites).
+#
+# C'est la *fondation* : sans cette App, les waves 21/22/23 plantent au sync.
+# Voir README_Hadoop_Openshift.md pour la stratégie 4-couches.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hadoop-platform
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "20"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://gitlab.com/Numberbis/gitops-openshift-repo.git
+    targetRevision: main
+    path: components/hadoop-platform
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hadoop
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

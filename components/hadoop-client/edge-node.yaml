@@ -1,0 +1,59 @@
+---
+# Pod « edge node » : shell interactif avec les CLI Hadoop et la config
+# cluster montée. Point d'entrée pour l'administration et les tests :
+#
+#   oc -n hadoop exec -it deploy/hadoop-edge -- bash
+#   hdfs dfs -ls /
+#   hdfs dfsadmin -report
+#   yarn node -list
+#   yarn application -list
+#
+# Pour Spark/Flink, voir README_Hadoop_Openshift.md : soit depuis un pod
+# basé sur apache/spark (exemple dans examples/spark-pi-yarn-job.yaml),
+# soit depuis une image custom Flink+Hadoop.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hadoop-edge
+  namespace: hadoop
+  labels:
+    app.kubernetes.io/name: hadoop-edge
+    app.kubernetes.io/component: client
+    app.kubernetes.io/part-of: hadoop
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hadoop-edge
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hadoop-edge
+        app.kubernetes.io/component: client
+        app.kubernetes.io/part-of: hadoop
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: edge
+          image: apache/hadoop:3.4.1
+          command: ["sleep", "infinity"]
+          env:
+            - { name: HADOOP_CONF_DIR, value: /etc/hadoop/conf }
+            - { name: HADOOP_USER_NAME, value: hadoop }
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+            limits:   { cpu: "1",  memory: 2Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: hadoop-config, mountPath: /etc/hadoop/conf, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: hadoop-config
+          configMap: { name: hadoop-config }
+        - name: tmp
+          emptyDir: {}

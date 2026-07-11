@@ -1,0 +1,19 @@
+---
+# Namespace unique pour TOUS les jobs Spark et Flink de production.
+#
+# Conventions :
+#   - Les opérateurs vivent ailleurs (`spark-operator`, `flink-operator`,
+#     gérés par leurs charts Helm) : ici il n'y a QUE les workloads.
+#   - PodSecurity `restricted` : drivers/executors Spark et
+#     JobManagers/TaskManagers Flink tournent en non-root, UID arbitraire.
+#   - Pour isoler des équipes/domaines, dupliquer ce namespace (et
+#     l'ajouter aux `jobNamespaces`/`watchNamespaces` des apps 31/32).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: data-jobs
+  labels:
+    name: data-jobs
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

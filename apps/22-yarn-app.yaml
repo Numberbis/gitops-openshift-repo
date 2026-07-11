@@ -1,0 +1,43 @@
+---
+# Wave 22 — Couche 3 « Cluster YARN ».
+#
+# Déploie l'ordonnanceur de ressources qui exécute les jobs Spark et Flink :
+#   - StatefulSet ResourceManager (1 replica),
+#   - StatefulSet NodeManagers (3 replicas — c'est LA capacité de calcul :
+#     scaler ce StatefulSet pour ajouter des slots Spark/Flink),
+#   - Services headless,
+#   - Route OpenShift vers l'UI du ResourceManager (port 8088).
+#
+# Wave 22 après 21 : YARN a besoin de HDFS (log aggregation, staging des
+# jars Spark/Flink, distributed cache).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: yarn
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "22"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://gitlab.com/Numberbis/gitops-openshift-repo.git
+    targetRevision: main
+    path: components/yarn
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hadoop
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 10m

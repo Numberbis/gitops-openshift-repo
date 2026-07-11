@@ -1,0 +1,67 @@
+---
+# Wave 31 — Spark Operator (Kubeflow), installé via son chart Helm
+# officiel directement par ArgoCD (pas de manifests vendorés : la mise à
+# jour de l'opérateur = bump de `targetRevision`).
+#
+# Rôle : réconcilie les CRs `SparkApplication` du namespace `data-jobs`
+# (spark.jobNamespaces ci-dessous) — il lance le driver Spark en pod,
+# qui lance lui-même ses executors en pods. Plus de YARN : c'est le
+# scheduler Kubernetes qui alloue.
+#
+# Wave 31 après 30 : le chart crée le ServiceAccount + RBAC des jobs
+# DANS `data-jobs`, le namespace doit donc déjà exister.
+#
+# ⚠ Versions : `targetRevision` = version du CHART (voir
+#   https://github.com/kubeflow/spark-operator/releases). Vérifier les
+#   release notes avant un bump — le schéma des values a changé entre
+#   les majeures 1.x et 2.x.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: spark-operator
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "31"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://kubeflow.github.io/spark-operator
+    chart: spark-operator
+    targetRevision: 2.1.0
+    helm:
+      releaseName: spark-operator
+      values: |
+        spark:
+          # Namespaces surveillés : le RBAC des jobs (SA `spark-operator-spark`,
+          # Role, RoleBinding) est créé automatiquement dans chacun.
+          jobNamespaces:
+            - data-jobs
+          serviceAccount:
+            create: true
+        controller:
+          replicas: 1
+        # Le webhook applique les mutations (volumes, affinités, env des
+        # pods driver/executor déclarés dans les CRs SparkApplication).
+        webhook:
+          enable: true
+        prometheus:
+          metrics:
+            enable: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: spark-operator
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 10m

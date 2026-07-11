@@ -1,0 +1,13 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - rbac-flink.yaml
+  - networkpolicy.yaml
+# Vos jobs de production se déclarent ICI : copier un template depuis
+# examples/, l'adapter, puis le référencer :
+#   - jobs/mon-pipeline-flink.yaml
+#   - jobs/mon-job-spark.yaml
+# Un commit = un (re)déploiement contrôlé par les opérateurs
+# (savepoint + restore côté Flink, restart côté Spark).

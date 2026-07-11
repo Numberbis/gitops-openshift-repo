@@ -1,0 +1,23 @@
+---
+# Route OpenShift vers l'UI web du NameNode (lecture seule : topologie
+# HDFS, browse du filesystem, état des DataNodes).
+#
+# TLS terminé au routeur (edge) : le NameNode parle HTTP en interne.
+# ⚠ L'UI n'a AUCUNE authentification (auth Hadoop `simple`) : ne pas
+#   exposer sur un cluster accessible publiquement sans oauth-proxy.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: hdfs-namenode-ui
+  namespace: hadoop
+  labels:
+    app.kubernetes.io/part-of: hadoop
+spec:
+  to:
+    kind: Service
+    name: hdfs-namenode
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

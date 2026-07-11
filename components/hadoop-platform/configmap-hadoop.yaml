@@ -1,0 +1,236 @@
+---
+# Configuration Hadoop UNIQUE, partagée par tous les daemons (NameNode,
+# DataNodes, ResourceManager, NodeManagers) ET par les clients Spark/Flink.
+#
+# Elle est montée dans /etc/hadoop/conf (HADOOP_CONF_DIR) de chaque pod —
+# on ne monte PAS par-dessus /opt/hadoop/etc/hadoop pour ne pas masquer
+# les fichiers par défaut de la distribution.
+#
+# Points d'attention :
+#   - fs.defaultFS et yarn.resourcemanager.hostname pointent sur les noms
+#     DNS STABLES des pods StatefulSet (pod-0 + service headless). Si vous
+#     renommez les StatefulSets/Services, mettez ces valeurs à jour.
+#   - dfs.replication=2 : dimensionné pour 3 DataNodes. Passer à 3 si vous
+#     scalez le StatefulSet `hdfs-datanode` à 4+ replicas.
+#   - Les ressources NodeManager (memory-mb / cpu-vcores) déclarées ici
+#     doivent rester COHÉRENTES avec les requests/limits du StatefulSet
+#     `yarn-nodemanager` (components/yarn/nodemanager.yaml).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hadoop-config
+  namespace: hadoop
+  labels:
+    app.kubernetes.io/part-of: hadoop
+data:
+  core-site.xml: |
+    <?xml version="1.0"?>
+    <configuration>
+      <!-- Point d'entrée HDFS : NameNode unique (non-HA). -->
+      <property>
+        <name>fs.defaultFS</name>
+        <value>hdfs://hdfs-namenode-0.hdfs-namenode.hadoop.svc.cluster.local:8020</value>
+      </property>
+      <!-- Utilisateur affiché par les UIs web pour naviguer dans HDFS. -->
+      <property>
+        <name>hadoop.http.staticuser.user</name>
+        <value>hadoop</value>
+      </property>
+    </configuration>
+
+  hdfs-site.xml: |
+    <?xml version="1.0"?>
+    <configuration>
+      <property>
+        <name>dfs.namenode.name.dir</name>
+        <value>file:///hadoop/dfs/name</value>
+      </property>
+      <property>
+        <name>dfs.datanode.data.dir</name>
+        <value>file:///hadoop/dfs/data</value>
+      </property>
+      <!-- 2 répliques pour 3 DataNodes : tolère la perte d'un nœud sans
+           saturer le stockage. Passer à 3 au-delà de 3 DataNodes. -->
+      <property>
+        <name>dfs.replication</name>
+        <value>2</value>
+      </property>
+      <!-- Les daemons écoutent sur toutes les interfaces : indispensable
+           en pod (l'IP du pod ne matche pas le hostname du service). -->
+      <property>
+        <name>dfs.namenode.rpc-bind-host</name>
+        <value>0.0.0.0</value>
+      </property>
+      <property>
+        <name>dfs.namenode.servicerpc-bind-host</name>
+        <value>0.0.0.0</value>
+      </property>
+      <property>
+        <name>dfs.namenode.http-bind-host</name>
+        <value>0.0.0.0</value>
+      </property>
+      <!-- Les DataNodes s'enregistrent avec leur IP de pod, qui ne
+           résout pas en reverse DNS vers leur hostname StatefulSet :
+           on désactive ce contrôle (classique sur Kubernetes). -->
+      <property>
+        <name>dfs.namenode.datanode.registration.ip-hostname-check</name>
+        <value>false</value>
+      </property>
+      <property>
+        <name>dfs.permissions.superusergroup</name>
+        <value>hadoop</value>
+      </property>
+    </configuration>
+
+  yarn-site.xml: |
+    <?xml version="1.0"?>
+    <configuration>
+      <!-- ResourceManager : nom DNS stable du pod-0 du StatefulSet. -->
+      <property>
+        <name>yarn.resourcemanager.hostname</name>
+        <value>yarn-resourcemanager-0.yarn-resourcemanager.hadoop.svc.cluster.local</value>
+      </property>
+      <property>
+        <name>yarn.resourcemanager.bind-host</name>
+        <value>0.0.0.0</value>
+      </property>
+      <!-- Shuffle MapReduce ; Spark et Flink n'en ont pas besoin mais ça
+           permet aussi de lancer des jobs MR (distcp, teragen...). -->
+      <property>
+        <name>yarn.nodemanager.aux-services</name>
+        <value>mapreduce_shuffle</value>
+      </property>
+      <property>
+        <name>yarn.nodemanager.aux-services.mapreduce_shuffle.class</name>
+        <value>org.apache.hadoop.mapred.ShuffleHandler</value>
+      </property>
+      <!-- ⚠ Capacité annoncée par CHAQUE NodeManager. Doit rester ≤ aux
+           limits du container yarn-nodemanager (8 Gi / 4 cpu par défaut,
+           moins ~2 Gi pour la JVM du NM lui-même). -->
+      <property>
+        <name>yarn.nodemanager.resource.memory-mb</name>
+        <value>6144</value>
+      </property>
+      <property>
+        <name>yarn.nodemanager.resource.cpu-vcores</name>
+        <value>4</value>
+      </property>
+      <property>
+        <name>yarn.scheduler.minimum-allocation-mb</name>
+        <value>256</value>
+      </property>
+      <property>
+        <name>yarn.scheduler.maximum-allocation-mb</name>
+        <value>6144</value>
+      </property>
+      <!-- Le contrôle de mémoire virtuelle produit des faux positifs avec
+           les JVM modernes (et cgroups gère déjà la mémoire réelle). -->
+      <property>
+        <name>yarn.nodemanager.vmem-check-enabled</name>
+        <value>false</value>
+      </property>
+      <property>
+        <name>yarn.nodemanager.local-dirs</name>
+        <value>/hadoop/yarn/local</value>
+      </property>
+      <property>
+        <name>yarn.nodemanager.log-dirs</name>
+        <value>/hadoop/yarn/logs</value>
+      </property>
+      <!-- Agrégation des logs applicatifs dans HDFS : `yarn logs
+           -applicationId <id>` fonctionne après la fin du job. -->
+      <property>
+        <name>yarn.log-aggregation-enable</name>
+        <value>true</value>
+      </property>
+      <property>
+        <name>yarn.nodemanager.remote-app-log-dir</name>
+        <value>/tmp/logs</value>
+      </property>
+      <!-- Sans ça, le disk-health-checker marque le nœud UNHEALTHY dès
+           90 % d'utilisation du volume — trop agressif sur de petits PV. -->
+      <property>
+        <name>yarn.nodemanager.disk-health-checker.max-disk-utilization-per-disk-percentage</name>
+        <value>98.0</value>
+      </property>
+      <!-- Variables propagées du NM vers les containers Spark/Flink. -->
+      <property>
+        <name>yarn.nodemanager.env-whitelist</name>
+        <value>JAVA_HOME,HADOOP_COMMON_HOME,HADOOP_HDFS_HOME,HADOOP_CONF_DIR,CLASSPATH_PREPEND_DISTCACHE,HADOOP_YARN_HOME,HADOOP_HOME,PATH,LANG,TZ,HADOOP_MAPRED_HOME</value>
+      </property>
+    </configuration>
+
+  mapred-site.xml: |
+    <?xml version="1.0"?>
+    <configuration>
+      <property>
+        <name>mapreduce.framework.name</name>
+        <value>yarn</value>
+      </property>
+      <property>
+        <name>yarn.app.mapreduce.am.env</name>
+        <value>HADOOP_MAPRED_HOME=/opt/hadoop</value>
+      </property>
+      <property>
+        <name>mapreduce.map.env</name>
+        <value>HADOOP_MAPRED_HOME=/opt/hadoop</value>
+      </property>
+      <property>
+        <name>mapreduce.reduce.env</name>
+        <value>HADOOP_MAPRED_HOME=/opt/hadoop</value>
+      </property>
+    </configuration>
+
+  capacity-scheduler.xml: |
+    <?xml version="1.0"?>
+    <configuration>
+      <!-- Scheduler minimal : une seule queue `default` à 100 %.
+           Créer des queues dédiées (spark / flink / batch) ici si besoin
+           d'isolation — c'est du GitOps, un commit suffit. -->
+      <property>
+        <name>yarn.scheduler.capacity.root.queues</name>
+        <value>default</value>
+      </property>
+      <property>
+        <name>yarn.scheduler.capacity.root.default.capacity</name>
+        <value>100</value>
+      </property>
+      <property>
+        <name>yarn.scheduler.capacity.root.default.maximum-capacity</name>
+        <value>100</value>
+      </property>
+      <property>
+        <name>yarn.scheduler.capacity.root.default.state</name>
+        <value>RUNNING</value>
+      </property>
+      <property>
+        <name>yarn.scheduler.capacity.root.default.acl_submit_applications</name>
+        <value>*</value>
+      </property>
+      <property>
+        <name>yarn.scheduler.capacity.root.default.acl_administer_queue</name>
+        <value>*</value>
+      </property>
+      <!-- Flink session/per-job consomme un AM par job : 50 % évite le
+           blocage « AM limit exceeded » sur un petit cluster. -->
+      <property>
+        <name>yarn.scheduler.capacity.maximum-am-resource-percent</name>
+        <value>0.5</value>
+      </property>
+      <!-- Prend en compte CPU **et** mémoire dans l'allocation (sinon
+           seuls les Mo comptent et les vcores sont ignorés). -->
+      <property>
+        <name>yarn.scheduler.capacity.resource-calculator</name>
+        <value>org.apache.hadoop.yarn.util.resource.DominantResourceCalculator</value>
+      </property>
+    </configuration>
+
+  log4j.properties: |
+    # Logs sur la console uniquement : les daemons tournent en foreground,
+    # c'est `oc logs` / la stack Elastic qui collecte.
+    hadoop.root.logger=INFO,console
+    log4j.rootLogger=${hadoop.root.logger}
+    log4j.appender.console=org.apache.log4j.ConsoleAppender
+    log4j.appender.console.target=System.err
+    log4j.appender.console.layout=org.apache.log4j.PatternLayout
+    log4j.appender.console.layout.ConversionPattern=%d{ISO8601} %-5p %c{2}: %m%n

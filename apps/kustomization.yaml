@@ -16,3 +16,18 @@ resources:
   - 12-elasticsearch-app.yaml
   - 13-stackconfig-app.yaml
   - 14-elastic-agents-app.yaml
+  # Stack Hadoop : HDFS + YARN dans OpenShift — waves 20→23.
+  # DÉSACTIVÉE : pour des jobs Spark/Flink 24/7, le chemin recommandé est
+  # la stack streaming ci-dessous (opérateurs natifs Kubernetes) — voir
+  # README_Flink_Spark.md § « Pourquoi les opérateurs plutôt que YARN ».
+  # Réactiver ces 4 lignes uniquement pour un besoin YARN iso-prod
+  # (README_Hadoop_Openshift.md).
+  # - 20-hadoop-platform-app.yaml
+  # - 21-hdfs-app.yaml
+  # - 22-yarn-app.yaml
+  # - 23-hadoop-client-app.yaml
+  # Stack streaming : Spark Operator + Flink Operator pour jobs 24/7 —
+  # waves 30→32. Voir README_Flink_Spark.md.
+  - 30-streaming-platform-app.yaml
+  - 31-spark-operator-app.yaml
+  - 32-flink-operator-app.yaml

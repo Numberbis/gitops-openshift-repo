@@ -1,0 +1,22 @@
+---
+# Route OpenShift vers l'UI web du ResourceManager (liste des
+# applications Spark/Flink, état des NodeManagers, queues).
+#
+# ⚠ Comme l'UI NameNode : aucune authentification native — ne pas
+#   exposer publiquement sans oauth-proxy devant.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: yarn-resourcemanager-ui
+  namespace: hadoop
+  labels:
+    app.kubernetes.io/part-of: hadoop
+spec:
+  to:
+    kind: Service
+    name: yarn-resourcemanager
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

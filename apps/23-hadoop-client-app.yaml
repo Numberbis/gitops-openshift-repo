@@ -1,0 +1,42 @@
+---
+# Wave 23 — Couche 4 « Client / Edge node ».
+#
+# Déploie un pod « edge » avec les outils Hadoop et la configuration
+# cluster montée : c'est le point d'entrée pour
+#   - les commandes `hdfs dfs ...` et `yarn application ...`,
+#   - la soumission de jobs Spark (`spark-submit --master yarn`),
+#   - la soumission de jobs Flink (`flink run -t yarn-per-job`).
+#
+# Des manifests d'exemple (Job Kubernetes qui lance un SparkPi sur YARN)
+# sont fournis dans components/hadoop-client/examples/ — non synchronisés
+# par ArgoCD, à appliquer à la main.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hadoop-client
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "23"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://gitlab.com/Numberbis/gitops-openshift-repo.git
+    targetRevision: main
+    path: components/hadoop-client
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hadoop
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

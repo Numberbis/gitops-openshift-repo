@@ -1,0 +1,144 @@
+---
+# NetworkPolicy « deny-all » par défaut sur le namespace des jobs —
+# même philosophie que `elastic` et `hadoop`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: data-jobs
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Intra-namespace : driver Spark ↔ executors (ports dynamiques) et
+# JobManager Flink ↔ TaskManagers (6123, 6124, blob server…). Ports en
+# partie éphémères → on autorise tout entre pods du namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-jobs-internal
+  namespace: data-jobs
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector: {}
+  egress:
+    - to:
+        - podSelector: {}
+---
+# Egress vers le kube-apiserver : VITAL ici, contrairement à un cluster
+# YARN. Le driver Spark crée ses executors via l'API Kubernetes, et le
+# JobManager Flink y gère ses pods TaskManager + ConfigMaps HA.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-apiserver
+  namespace: data-jobs
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - ports:
+        - { protocol: TCP, port: 6443 }
+---
+# Egress DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-dns
+  namespace: data-jobs
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-dns
+      ports:
+        - { protocol: UDP, port: 5353 }
+        - { protocol: TCP, port: 5353 }
+---
+# Les opérateurs → pods des jobs :
+#   - le Flink Operator interroge l'API REST du JobManager (8081) pour
+#     l'état des jobs et le déclenchement des savepoints,
+#   - le webhook du Spark Operator n'a pas besoin d'atteindre les pods,
+#     mais l'UI driver (4040) est utile au debug depuis l'opérateur.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-operators-to-jobs
+  namespace: data-jobs
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: flink-operator
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: spark-operator
+      ports:
+        - { protocol: TCP, port: 8081 }   # REST JobManager Flink
+        - { protocol: TCP, port: 4040 }   # UI driver Spark
+---
+# Prometheus User Workload Monitoring → métriques des jobs (si vous
+# posez des ServiceMonitor/PodMonitor, cf. README § Monitoring).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-monitoring-scrape
+  namespace: data-jobs
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-user-workload-monitoring
+---
+# Egress vers les sources/puits de données : object storage S3 (état
+# Flink, checkpoints Spark), Kafka, bases de données…
+#
+# ⚠ Les CIDR/ports sont des PLACEHOLDERS — adapter à votre topologie,
+#   comme la policy `allow-egress-platform` du namespace `elastic`.
+#   Pendant la migration, ajouter ici l'accès au cluster HDFS/YARN
+#   historique (NameNode 8020, DataNodes 9866).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-data-sources
+  namespace: data-jobs
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    # Object storage S3/ODF interne (état Flink + checkpoints Spark)
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/8       # placeholder ODF/MinIO/S3 interne
+      ports:
+        - { protocol: TCP, port: 443 }
+    # Kafka — placeholder
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/8       # placeholder brokers Kafka
+      ports:
+        - { protocol: TCP, port: 9092 }
+        - { protocol: TCP, port: 9093 }
+    # HDFS historique pendant la migration — placeholder
+    - to:
+        - ipBlock:
+            cidr: 192.168.0.0/16   # placeholder cluster Hadoop legacy
+      ports:
+        - { protocol: TCP, port: 8020 }   # NameNode RPC
+        - { protocol: TCP, port: 9866 }   # DataNodes
