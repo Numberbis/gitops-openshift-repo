@@ -1,0 +1,56 @@
+---
+# EDOT Collector : ingestion de logs Kafka (mTLS) → Elasticsearch.
+# Documentation : edot-collector/README.md ; mise en service pas à pas :
+# edot-collector/docs/tutoriel-connexions-kafka-elasticsearch.md.
+#
+# Convention « chart distant + values du dépôt + répertoire Kustomize
+# compagnon ». Les fichiers de values sont fusionnés DANS CET ORDRE (une clé
+# d'un fichier suivant remplace celle d'un fichier précédent ; les listes sont
+# remplacées, pas fusionnées).
+#
+# VOLONTAIREMENT NON ENREGISTRÉE : ce fichier n'est PAS listé dans
+# apps/kustomization.yaml tant que les TODO de edot-collector/TODO.md ne sont
+# pas renseignés. Il est lu par les scripts edot-collector/tests/ (chart,
+# version et valueFiles). Enregistrement manuel, le moment venu :
+#   oc apply -f apps/40-edot-collector-app.yaml
+#
+# AUCUNE synchronisation automatique pendant la mise en service (README §16) :
+# passer en `automated` dans une PR dédiée après une période d'observation
+# (contrôlé par tests/validate-config.sh).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: edot-collector
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "40"
+spec:
+  project: default
+  sources:
+    - repoURL: https://open-telemetry.github.io/opentelemetry-helm-charts
+      chart: opentelemetry-collector
+      targetRevision: 0.178.3
+      helm:
+        releaseName: edot-collector
+        valueFiles:
+          - $values/edot-collector/values.yaml
+          # Profil plateforme : values-kubernetes.yaml À LA PLACE de celui-ci
+          # sur un cluster Kubernetes non OpenShift.
+          - $values/edot-collector/values-openshift.yaml
+          - $values/edot-collector/values-kafka.yaml
+          - $values/edot-collector/values-elasticsearch.yaml
+          - $values/edot-collector/values-processing.yaml
+    - repoURL: https://gitlab.com/Numberbis/gitops-openshift-repo.git
+      targetRevision: main
+      ref: values
+    # Répertoire compagnon : ExternalSecrets, NetworkPolicies, alertes,
+    # dashboard Grafana (namespace monitoring).
+    - repoURL: https://gitlab.com/Numberbis/gitops-openshift-repo.git
+      targetRevision: main
+      path: edot-collector
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: edot
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true

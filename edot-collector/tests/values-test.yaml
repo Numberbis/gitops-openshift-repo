@@ -20,9 +20,6 @@ config:
       logs:
         topics:
           - otlp-logs-test
-      auth:
-        sasl:
-          mechanism: SCRAM-SHA-512
   exporters:
     elasticsearch:
       endpoints:

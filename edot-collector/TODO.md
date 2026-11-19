@@ -15,11 +15,11 @@ ligne « Bloquant » n'est pas traitée, la chaîne **ne peut pas démarrer** :
 Contrôle à tout moment :
 
 ```bash
-infra/edot-collector/tests/preflight.sh          # liste chaque TODO restant (fichier:ligne)
-infra/edot-collector/tests/preflight.sh --live   # + cluster, en lecture seule
+edot-collector/tests/preflight.sh          # liste chaque TODO restant (fichier:ligne)
+edot-collector/tests/preflight.sh --live   # + cluster, en lecture seule
 ```
 
-Les valeurs **sensibles** (mot de passe, API Key) ne vont **jamais** dans Git :
+Les valeurs **sensibles** (clé privée du certificat client Kafka, API Key) ne vont **jamais** dans Git :
 la colonne « Valeur » indique alors l'emplacement Vault à alimenter
 (procédure : [README §10](README.md#10-gestion-des-secrets)).
 
@@ -31,16 +31,16 @@ la colonne « Valeur » indique alors l'emplacement Vault à alimenter
 |---|---|---|---|
 | **Kafka brokers** | Au moins 2 brokers de *bootstrap*, `hôte:port`, adresses **externes** joignables depuis OpenShift (pas de Service Kubernetes). Le nom doit figurer dans le certificat TLS du broker. | `values-kafka.yaml` → `brokers` (`TODO_KAFKA_BROKER_n:TODO_KAFKA_PORT`) | TODO |
 | **Kafka advertised listeners** | Liste de **tous** les `hôte:port` annoncés par les brokers pour le listener utilisé (le client s'y connecte après le bootstrap). Chacun doit être résolu en DNS et joignable depuis les pods. | Documentation réseau + `network-policies/allows/allow-egress-kafka.yaml` ; vérification : `tests/network-diagnostics.sh kafka` | TODO |
-| Kafka port | Port du listener SASL_SSL (souvent 9093 ou 9094). | `TODO_KAFKA_PORT` (values-kafka.yaml et allow-egress-kafka.yaml) | TODO |
+| Kafka port | Port du listener **SSL** à authentification client (mTLS) — souvent distinct du port SASL_SSL. | `TODO_KAFKA_PORT` (values-kafka.yaml et allow-egress-kafka.yaml) | TODO |
 | **Kafka topics** | Topic(s) contenant les logs **OTLP JSON** (`ExportLogsServiceRequest`). Liste, ou motif `^regex`. | `values-kafka.yaml` → `logs.topics` | TODO |
 | Nombre de partitions | Par topic. Le nombre de réplicas EDOT utiles est ≤ au nombre total de partitions. | Information (dimensionnement, README §11) | TODO |
 | **Kafka consumer group** | Groupe **dédié** à EDOT, jamais partagé avec Logstash ou un autre consommateur. Ex. `edot-logs-prod`. | `values-kafka.yaml` → `group_id` | TODO |
-| **Kafka protocol** | `security.protocol` du listener. Attendu : `SASL_SSL` (configuration fournie). `SSL` + certificat client : README §9. `PLAINTEXT` / `SASL_PLAINTEXT` : refusés (TLS obligatoire). | `values-kafka.yaml` → blocs `tls` / `auth` | TODO (SASL_SSL ?) |
-| **Kafka SASL mechanism** | `SCRAM-SHA-512`, `SCRAM-SHA-256` ou `PLAIN`. | `values-kafka.yaml` → `auth.sasl.mechanism` | TODO |
-| **Kafka username** | Compte SASL **dédié** à EDOT. | Vault `secret/kubernetes/edot/edot-kafka-credentials`, clé `username` | TODO (Vault) |
-| **Kafka password** | Mot de passe de ce compte. | Vault `…/edot-kafka-credentials`, clé `password` | TODO (Vault) |
-| **Kafka CA** | Certificat(s) PEM de l'autorité qui signe les certificats des brokers (chaîne complète si intermédiaire). | Vault `…/edot-kafka-credentials`, clé `ca.crt` | TODO (Vault) |
-| **ACL Kafka** | À créer par l'équipe Kafka pour le compte EDOT : `Read` + `Describe` sur chaque topic, `Read` sur le groupe. Aucun droit d'écriture. | Équipe Kafka (README §9) | TODO |
+| **Kafka protocol** | `security.protocol=SSL` avec `ssl.client.auth=required` côté brokers (mTLS) : **configuration fournie**. `PLAINTEXT` / `SASL_PLAINTEXT` : refusés (TLS obligatoire). | `values-kafka.yaml` → bloc `tls` (`cert_file`, `key_file`), aucun bloc `auth` | ✅ SSL (mTLS) |
+| **Kafka principal** | Forme exacte du principal dérivé du certificat, selon `ssl.principal.mapping.rules` des brokers : DN complet (`User:CN=…,OU=…,O=…,C=…`, défaut) ou CN seul. Les ACL portent sur cette chaîne exacte. | Équipe Kafka (tutoriel §A1) | TODO |
+| **Kafka certificat client** | Certificat **dédié** à EDOT (un par environnement), DN convenu avec l'équipe Kafka, usage `clientAuth`, signé par une CA du truststore des brokers, + intermédiaires. Date d'expiration et rappel de renouvellement. | Vault `secret/kubernetes/edot/edot-kafka-credentials`, clé `tls.crt` (tutoriel §A2, §A4) | TODO (Vault) |
+| **Kafka clé privée** | Clé du certificat client, PEM **PKCS#8 non chiffrée** (`BEGIN PRIVATE KEY`). | Vault `…/edot-kafka-credentials`, clé `tls.key` | TODO (Vault) |
+| **Kafka CA** | Certificat(s) PEM de l'autorité qui signe les certificats **des brokers** (chaîne complète si intermédiaire) — à ne pas confondre avec la CA du certificat client. | Vault `…/edot-kafka-credentials`, clé `ca.crt` | TODO (Vault) |
+| **ACL Kafka** | À créer par l'équipe Kafka pour le **principal du certificat** d'EDOT : `Read` + `Describe` sur chaque topic, `Read` sur le groupe. Aucun droit d'écriture. Si ACL restreintes par hôte : EgressIP du namespace. | Équipe Kafka (README §9, tutoriel §A3) | TODO |
 | Rétention Kafka | `retention.ms` / `retention.bytes` des topics : durée maximale d'indisponibilité d'Elasticsearch ou d'EDOT absorbable sans perte, et fenêtre de rejeu. | Information (README §19) | TODO |
 | `offsets.retention.minutes` | Rétention des offsets d'un groupe sans consommateur (défaut Kafka : 7 jours). | Information (README §19.2) | TODO |
 | Initial offset (1ʳᵉ mise en service) | `latest` (défaut configuré : pas de rejeu de l'historique) ou `earliest` (indexe toute la rétention : doublons si ces logs sont déjà indexés par Logstash). | `values-kafka.yaml` → `initial_offset` | À CONFIRMER (latest) |
@@ -67,7 +67,7 @@ la colonne « Valeur » indique alors l'emplacement Vault à alimenter
 
 | Paramètre | Description | Où le renseigner | Valeur |
 |---|---|---|---|
-| **Firewall Kafka** | Ouverture **OpenShift → Kafka** : IP source (EgressIP ou IP des workers) vers **chaque** broker annoncé, TCP sur le port SASL_SSL. | Demande d'ouverture de flux (équipe réseau) | TODO |
+| **Firewall Kafka** | Ouverture **OpenShift → Kafka** : IP source (EgressIP ou IP des workers) vers **chaque** broker annoncé, TCP sur le port du listener SSL (mTLS). | Demande d'ouverture de flux (équipe réseau) | TODO |
 | **Firewall Elasticsearch** | Ouverture **OpenShift → Elasticsearch** : IP source vers les endpoints (ou le load balancer), TCP sur le port HTTPS. Liste blanche d'IP éventuelle côté Elasticsearch / proxy. | Demande d'ouverture de flux | TODO |
 | IP de sortie OpenShift | IP vues par les pare-feu : EgressIP du namespace `edot` si l'équipe plateforme en attribue une (recommandé), sinon IP des workers (NAT). **Aucune EgressIP n'est créée par ce dépôt.** | Équipe plateforme (README §7) | TODO |
 | CIDR Kafka (NetworkPolicy) | CIDR couvrant les IP de tous les brokers (bootstrap + annoncés). | `network-policies/allows/allow-egress-kafka.yaml` (`TODO_KAFKA_BROKERS_CIDR_n`) | TODO |
@@ -80,9 +80,9 @@ la colonne « Valeur » indique alors l'emplacement Vault à alimenter
 
 | Paramètre | Description | Où le renseigner | Valeur |
 |---|---|---|---|
-| Cluster cible | OpenShift (profil `values-openshift.yaml`, défaut) ou Kubernetes standard (`values-kubernetes.yaml`, p. ex. cluster kubeadm de ce dépôt). | `argocd/applications/infra/edot-collector.yaml` → `valueFiles` | À CONFIRMER (OpenShift) |
+| Cluster cible | OpenShift (profil `values-openshift.yaml`, défaut) ou Kubernetes standard (`values-kubernetes.yaml`, p. ex. cluster kubeadm de ce dépôt). | `apps/40-edot-collector-app.yaml` → `valueFiles` | À CONFIRMER (OpenShift) |
 | Version d'OpenShift | Pour vérifier SCC `restricted-v2`, OVN-Kubernetes, supervision des projets utilisateur. | Information | TODO |
-| Instance Argo CD OpenShift | OpenShift GitOps : namespace de l'instance qui gère `edot` (label `argocd.argoproj.io/managed-by`), AppProject à utiliser. | `argocd/applications/infra/edot-collector.yaml` (`TODO_ARGOCD_NAMESPACE`, commenté) | TODO |
+| Instance Argo CD OpenShift | OpenShift GitOps : namespace de l'instance qui gère `edot` (label `argocd.argoproj.io/managed-by`), AppProject à utiliser. | `apps/40-edot-collector-app.yaml` (namespace `openshift-gitops`, projet `default`, comme les autres Applications de `apps/`) | À CONFIRMER |
 | StorageClass | Classe des PVC de file (RWO, bloc ou fichier, `allowVolumeExpansion` souhaité, `reclaimPolicy` Retain souhaitée). Défaut du cluster si non fixée. | `values.yaml` → `storageClassName` (commenté) | TODO |
 | Registre d'images | Accès direct à `docker.elastic.co` depuis les nœuds, ou miroir interne (`ImageDigestMirrorSet`, registre Quay/Nexus) : alors surcharger `image.repository`. | `values.yaml` → `image.repository` | TODO |
 | Pull secret | Requis si miroir authentifié. | `imagePullSecrets` (values.yaml) + Vault | TODO (aucun ?) |
@@ -98,7 +98,7 @@ la colonne « Valeur » indique alors l'emplacement Vault à alimenter
 
 ## Ordre conseillé
 
-1. Équipes Kafka / Elasticsearch : comptes, ACL, API Key, CA, data stream (§1, §2).
+1. Équipes PKI / Kafka / Elasticsearch : certificat client, principal, ACL, API Key, CA, data stream (§1, §2).
 2. Équipe réseau / plateforme : IP de sortie, ouvertures de flux, DNS (§3).
 3. Renseigner les fichiers values et NetworkPolicies (PR), alimenter Vault.
 4. `tests/validate-config.sh` (adapter son étape 5a, qui exige aujourd'hui le refus des TODO), `tests/preflight.sh --live`.

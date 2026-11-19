@@ -5,7 +5,7 @@
 # Passerelle d'ingestion de logs : Kafka EXTERNE (OTLP JSON) → filtrage et
 # suppression de champs (OTTL) → Elasticsearch 9.x EXTERNE.
 #
-# Application Argo CD : argocd/applications/infra/edot-collector.yaml. Les
+# Application Argo CD : apps/40-edot-collector-app.yaml. Les
 # fichiers de values sont fusionnés dans CET ordre (une clé d'un fichier
 # suivant remplace celle d'un fichier précédent ; les LISTES sont remplacées,
 # pas fusionnées) :
@@ -123,17 +123,9 @@ enableConfigChecksumAnnotation: true
 # valeurs ne sont pas dans Vault, ces Secrets n'existent pas et les pods
 # restent en CreateContainerConfigError : AUCUNE connexion n'est tentée.
 # Procédure de création : README §10.
+# Kafka : authentification par certificat client (mTLS), montée en fichiers
+# ci-dessous — aucune variable d'identifiant Kafka.
 extraEnvs:
-  - name: KAFKA_USERNAME
-    valueFrom:
-      secretKeyRef:
-        name: edot-kafka-credentials
-        key: username
-  - name: KAFKA_PASSWORD
-    valueFrom:
-      secretKeyRef:
-        name: edot-kafka-credentials
-        key: password
   - name: ELASTICSEARCH_API_KEY
     valueFrom:
       secretKeyRef:
@@ -141,16 +133,24 @@ extraEnvs:
         key: api-key
 
 extraVolumes:
-  # Autorités de certification (certificats PUBLICS) montées en fichiers.
-  # Seule la clé ca.crt est projetée : les identifiants du même Secret ne
-  # sont pas exposés dans le système de fichiers du conteneur.
-  - name: kafka-ca
+  # Kafka (mTLS) : CA des brokers, certificat client et clé privée.
+  # defaultMode 0440 et NON 0400 : le conteneur tourne avec un UID arbitraire
+  # (SCC restricted-v2) ; les fichiers d'un volume Secret appartiennent à
+  # root et au groupe fsGroup injecté par la SCC. Seule la lecture par le
+  # GROUPE permet au Collector de lire sa clé (0400 → permission denied).
+  - name: kafka-tls
     secret:
       secretName: edot-kafka-credentials
       defaultMode: 0440
       items:
         - key: ca.crt
           path: ca.crt
+        - key: tls.crt
+          path: tls.crt
+        - key: tls.key
+          path: tls.key
+  # Elasticsearch : seule la CA (certificat PUBLIC) est projetée ; l'API Key
+  # du même Secret n'est pas exposée dans le système de fichiers.
   - name: elasticsearch-ca
     secret:
       secretName: edot-elasticsearch-credentials
@@ -166,7 +166,7 @@ extraVolumes:
 extraVolumeMounts:
   - name: queue
     mountPath: /var/lib/edot
-  - name: kafka-ca
+  - name: kafka-tls
     mountPath: /etc/edot/kafka
     readOnly: true
   - name: elasticsearch-ca
