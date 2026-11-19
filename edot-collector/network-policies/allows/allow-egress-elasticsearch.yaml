@@ -1,0 +1,33 @@
+# EDOT -> Elasticsearch EXTERNE (HTTPS, bulk API).
+#
+# CIDR = adresses vers lesquelles les noms de `endpoints` (values-elasticsearch.yaml)
+# sont résolus : nœuds Elasticsearch, ou VIP du load balancer / reverse proxy
+# qui les précède. La découverte des nœuds est désactivée dans l'exporter :
+# seules ces adresses sont contactées.
+# Un proxy HTTP(S) sortant d'entreprise remplacerait cette destination par
+# celle du proxy (TODO.md, ligne « Proxy sortant »).
+#
+# TODO : CIDR et port HTTPS (TODO.md, lignes « Elasticsearch endpoints » et
+# « Firewall Elasticsearch »). Objet invalide tant que ces TODO restent.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-elasticsearch
+  labels:
+    network-policy-phase: allow
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/instance
+        operator: In
+        values:
+          - edot-collector
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: TODO_ELASTICSEARCH_CIDR
+      ports:
+        - protocol: TCP
+          port: TODO_ELASTICSEARCH_PORT

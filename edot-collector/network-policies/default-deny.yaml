@@ -1,0 +1,13 @@
+# Default deny ingress ET egress pour tout le namespace edot. Les flux
+# nécessaires sont ouverts par les allow-* de ce répertoire.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  labels:
+    network-policy-phase: enforcement
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress

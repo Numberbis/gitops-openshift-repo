@@ -1,0 +1,122 @@
+# =============================================================================
+# Traitement des logs : protection mémoire, FILTRES et SUPPRESSIONS de champs
+# (OTTL) — fichier n°5
+# =============================================================================
+# Ce fichier est le SEUL à modifier pour ajouter ou retirer une règle.
+# Une modification fusionnée sur main change le checksum de la configuration :
+# Argo CD redémarre les pods un par un (rolling update). Validation AVANT
+# merge : infra/edot-collector/tests/validate-config.sh (syntaxe OTTL vérifiée
+# par le binaire EDOT) puis tests/functional/run-tests.sh (effet réel sur des
+# événements OTLP JSON). Mode d'emploi : README §12.
+#
+# Syntaxe OTTL de l'EDOT Collector 9.5.6 (contrib v0.163.0) :
+#   filter    https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/v0.163.0/processor/filterprocessor/README.md
+#   transform https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/v0.163.0/processor/transformprocessor/README.md
+#   fonctions https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/v0.163.0/pkg/ottl/ottlfuncs/README.md
+#
+# Rappels :
+#   * un attribut absent vaut nil : `==` est faux, IsMatch(nil, …) est faux,
+#     delete_key d'une clé absente ne fait rien → aucune erreur ;
+#   * error_mode: ignore — une règle en erreur (type inattendu) est journalisée
+#     et ignorée, le log CONTINUE dans le pipeline (il n'est ni perdu ni filtré) ;
+#   * ne JAMAIS écrire « {{ » (le chart applique tpl à la configuration).
+
+config:
+  processors:
+    # ── 1. Protection mémoire (toujours en premier) ──────────────────────
+    # Pourcentages de limits.memory (3 Gi) : refus des nouvelles données
+    # au-delà de 75 % (2,25 Gi), retour sous 60 % (75 - 15) avant reprise.
+    # Un refus est une erreur TRANSITOIRE pour le receiver Kafka : message
+    # non validé, retenté (error_backoff) — aucune perte. GOMEMLIMIT (80 %)
+    # déclenche le GC avant ce seuil.
+    memory_limiter:
+      check_interval: 1s
+      limit_percentage: 75
+      spike_limit_percentage: 15
+
+    # ── 2. FILTRES : suppression d'événements entiers ────────────────────
+    # Un log est SUPPRIMÉ dès qu'UNE condition d'une liste est vraie (OU
+    # logique) ; `and`, `or` et les parenthèses combinent des critères dans
+    # une condition. Chaque catégorie est un processor distinct : la
+    # métrique otelcol_processor_filter_logs_filtered{filter="<nom>"} compte
+    # les suppressions PAR catégorie.
+
+    # 2.a Niveaux de sévérité.
+    filter/severity:
+      error_mode: ignore
+      log_conditions:
+        # DEBUG à DEBUG4 (severity_number 5 à 8)…
+        - log.severity_number >= SEVERITY_NUMBER_DEBUG and log.severity_number <= SEVERITY_NUMBER_DEBUG4
+        # … ou libellé « DEBUG » sans severity_number (casse indifférente).
+        - IsMatch(log.severity_text, "(?i)^debug[1-4]?$")
+        # Exemple — supprimer aussi TRACE :
+        # - log.severity_number >= SEVERITY_NUMBER_TRACE and log.severity_number <= SEVERITY_NUMBER_TRACE4
+
+    # 2.b Attributs de RESSOURCE (service, environnement, hôte…). Une
+    #     condition sur la seule ressource supprime tous les logs de celle-ci.
+    filter/resource:
+      error_mode: ignore
+      log_conditions:
+        - resource.attributes["service.name"] == "excluded-service"
+        # Exemple — plusieurs services par expression régulière :
+        # - IsMatch(resource.attributes["service.name"], "^(excluded-service|legacy-batch)$")
+
+    # 2.c Attributs du LOG (requête HTTP, événement…).
+    filter/log-attributes:
+      error_mode: ignore
+      log_conditions:
+        # Healthchecks, par route (http.route) ou par chemin (url.path).
+        - IsMatch(log.attributes["http.route"], "^/(health|healthz|livez|readyz)$")
+        - IsMatch(log.attributes["url.path"], "^/(health|healthz|livez|readyz)$")
+
+    # 2.d Valeurs spécifiques et critères COMBINÉS (ressource + log, corps).
+    filter/values:
+      error_mode: ignore
+      log_conditions:
+        # Événement synthétique d'un environnement de test de charge.
+        - resource.attributes["deployment.environment.name"] == "load-test" and log.attributes["event.name"] == "synthetic.heartbeat"
+        # Corps texte précis d'une sonde de supervision.
+        - IsString(log.body) and log.body == "kube-probe healthcheck"
+
+    # ── 3. SUPPRESSION DE CHAMPS des logs conservés ──────────────────────
+    # Liste CENTRALISÉE des clés sensibles : l'expression régulière de
+    # l'ancre &sensitive-keys ci-dessous, appliquée telle quelle aux
+    # attributs de ressource, de scope et de log. La MÊME expression est
+    # recopiée dans la règle du Body (une ancre YAML ne peut pas être insérée
+    # dans une chaîne) : tests/validate-config.sh échoue si elles diffèrent.
+    #   * clés exactes, insensibles à la casse, « . » écrit [.] ;
+    #   * ajouter une clé : l'ajouter dans les DEUX expressions.
+    # Les suppressions ont lieu AVANT l'exporter : un champ supprimé n'est
+    # jamais transmis à Elasticsearch.
+    transform/redact:
+      error_mode: ignore
+      log_statements:
+        # 3.a Attributs de ressource.
+        - context: resource
+          statements:
+            - &sensitive-keys delete_matching_keys(attributes, "(?i)^(user[.]email|client[.]ip|debug[.]payload|host[.]mac|http[.]request[.]header[.]authorization|http[.]request[.]header[.]cookie)$")
+        # 3.b Attributs de scope (instrumentation).
+        - context: scope
+          statements:
+            - *sensitive-keys
+        # 3.c Attributs du log et Body.
+        - context: log
+          statements:
+            - *sensitive-keys
+            # Body structuré (objet JSON → kvlistValue OTLP), clés de 1er niveau.
+            - delete_matching_keys(body, "(?i)^(user[.]email|client[.]ip|debug[.]payload|host[.]mac|http[.]request[.]header[.]authorization|http[.]request[.]header[.]cookie)$") where IsMap(body)
+            # Champs IMBRIQUÉS : un chemin explicite par champ. La condition
+            # vérifie chaque niveau AVANT d'y accéder (évaluation court-circuitée).
+            #   body.user.email, body.client.ip, body.http.request.headers.authorization
+            - delete_key(body["user"], "email") where IsMap(body) and IsMap(body["user"])
+            - delete_key(body["client"], "ip") where IsMap(body) and IsMap(body["client"])
+            - delete_key(body["http"]["request"]["headers"], "authorization") where IsMap(body) and IsMap(body["http"]) and IsMap(body["http"]["request"]) and IsMap(body["http"]["request"]["headers"])
+            #   attributs imbriqués (attribut « user » de type objet) : attributes.user.email
+            - delete_key(attributes["user"], "email") where IsMap(attributes["user"])
+            # Body TEXTE contenant du JSON sérialisé : la valeur des clés
+            # sensibles est MASQUÉE (le texte reste du JSON valide). Pour une
+            # vraie suppression, décoder le Body en objet (change sa
+            # représentation dans Elasticsearch : body.text → body.structured) :
+            #   - set(body, ParseJSON(body)) where IsString(body) and IsMatch(body, "^\\s*\\{")
+            # « $$1 » : « $ » est doublé pour la configuration du Collector.
+            - replace_pattern(body, "\"(email|user[.]email|client[.]ip|password|authorization)\"\\s*:\\s*\"[^\"]*\"", "\"$$1\":\"[REDACTED]\"") where IsString(body)

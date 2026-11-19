@@ -1,0 +1,144 @@
+# =============================================================================
+# Banc de test fonctionnel LOCAL et JETABLE de l'EDOT Collector
+# =============================================================================
+# Lancé UNIQUEMENT par run-tests.py (qui génère CA, certificats, identifiants
+# aléatoires et configuration rendue dans un répertoire temporaire
+# $EDOT_TEST_WORK, puis détruit tout). Ne jamais lancer à la main contre des
+# services réels : Kafka et Elasticsearch sont ici des conteneurs de test.
+#
+# Réseau `internal` : aucun accès sortant, aucun port publié sur l'hôte.
+#
+# Reproduction des contraintes OpenShift (SCC restricted-v2) pour EDOT :
+#   UID arbitraire 1000680000, GID 0, GID supplémentaire = fsGroup simulé,
+#   rootfs en lecture seule, aucune capability, no-new-privileges, /tmp en
+#   tmpfs, file persistante sur un volume (PVC) rendu inscriptible par le
+#   seul fsGroup (comme le kubelet), commande identique à celle du chart.
+name: edot-functional-test
+
+networks:
+  edot-test:
+    internal: true
+
+volumes:
+  queue-edot-collector-0: {}
+  queue-edot-collector-1: {}
+
+x-edot: &edot
+  image: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6
+  user: "1000680000:0"
+  group_add:
+    - "1000680000"
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:size=64m
+  entrypoint: ["/usr/share/elastic-agent/otelcol"]
+  command: ["--config=/conf/relay.yaml"]
+  env_file:
+    - ${EDOT_TEST_WORK}/edot.env
+  networks:
+    - edot-test
+  mem_limit: 3g
+  cpus: 2
+  stop_grace_period: 60s
+  depends_on:
+    queue-permissions:
+      condition: service_completed_successfully
+
+services:
+  kafka-test:
+    image: apache/kafka:4.3.2
+    hostname: kafka-test
+    networks:
+      - edot-test
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9094
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # INTERNAL : administration depuis le conteneur uniquement (super user
+      # ANONYMOUS). EXTERNAL : seul listener utilisé par EDOT et le
+      # producteur, SASL_SSL + SCRAM-SHA-512, annoncé sous « kafka-test:9093 »
+      # (vérifie aussi le passage bootstrap → advertised.listeners).
+      KAFKA_LISTENERS: CONTROLLER://localhost:9094,INTERNAL://localhost:19092,EXTERNAL://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://localhost:19092,EXTERNAL://kafka-test:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:SASL_SSL
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_SASL_ENABLED_MECHANISMS: SCRAM-SHA-512
+      KAFKA_LISTENER_NAME_EXTERNAL_SCRAM___SHA___512_SASL_JAAS_CONFIG: org.apache.kafka.common.security.scram.ScramLoginModule required;
+      KAFKA_SSL_KEYSTORE_TYPE: PKCS12
+      KAFKA_SSL_KEYSTORE_LOCATION: /work/kafka.p12
+      KAFKA_SSL_KEYSTORE_PASSWORD: ${KAFKA_KEYSTORE_PASSWORD}
+      KAFKA_SSL_KEY_PASSWORD: ${KAFKA_KEYSTORE_PASSWORD}
+      # ACL : EDOT n'a que Read/Describe sur le topic et Read sur son groupe
+      # (privilèges minimaux documentés dans README §9).
+      KAFKA_AUTHORIZER_CLASS_NAME: org.apache.kafka.metadata.authorizer.StandardAuthorizer
+      KAFKA_SUPER_USERS: User:ANONYMOUS
+      KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_HEAP_OPTS: -Xms512m -Xmx512m
+    volumes:
+      - ${EDOT_TEST_WORK}:/work:ro
+    mem_limit: 1500m
+
+  elasticsearch-test:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.6
+    hostname: elasticsearch-test
+    networks:
+      - edot-test
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.enabled: "true"
+      xpack.security.http.ssl.certificate: certs/es.crt
+      xpack.security.http.ssl.key: certs/es.key
+      xpack.security.http.ssl.certificate_authorities: certs/ca.crt
+      xpack.security.transport.ssl.enabled: "false"
+      xpack.ml.enabled: "false"
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD}
+      ES_JAVA_OPTS: -Xms1g -Xmx1g
+    volumes:
+      - ${EDOT_TEST_WORK}/es-certs:/usr/share/elasticsearch/config/certs:ro
+    mem_limit: 2500m
+
+  # Équivalent du fsGroup appliqué par le kubelet au PVC : groupe 1000680000,
+  # setgid, rwx pour le groupe. Aucun droit pour l'UID du processus EDOT.
+  queue-permissions:
+    image: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6
+    user: "0:0"
+    network_mode: none
+    entrypoint: ["sh", "-c", "for d in /q0 /q1; do chown 0:1000680000 $$d && chmod 2770 $$d; done"]
+    volumes:
+      - queue-edot-collector-0:/q0
+      - queue-edot-collector-1:/q1
+
+  edot-collector-0:
+    <<: *edot
+    hostname: edot-collector-0
+    environment:
+      OTEL_K8S_POD_NAME: edot-collector-0
+      MY_POD_IP: 0.0.0.0
+    volumes:
+      - ${EDOT_TEST_WORK}/relay.yaml:/conf/relay.yaml:ro
+      - ${EDOT_TEST_WORK}/ca.crt:/etc/edot/kafka/ca.crt:ro
+      - ${EDOT_TEST_WORK}/ca.crt:/etc/edot/elasticsearch/ca.crt:ro
+      - queue-edot-collector-0:/var/lib/edot
+
+  edot-collector-1:
+    <<: *edot
+    hostname: edot-collector-1
+    environment:
+      OTEL_K8S_POD_NAME: edot-collector-1
+      MY_POD_IP: 0.0.0.0
+    volumes:
+      - ${EDOT_TEST_WORK}/relay.yaml:/conf/relay.yaml:ro
+      - ${EDOT_TEST_WORK}/ca.crt:/etc/edot/kafka/ca.crt:ro
+      - ${EDOT_TEST_WORK}/ca.crt:/etc/edot/elasticsearch/ca.crt:ro
+      - queue-edot-collector-1:/var/lib/edot

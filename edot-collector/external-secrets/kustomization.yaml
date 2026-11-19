@@ -1,0 +1,12 @@
+# Généré par scripts/vault-secrets.py render depuis infra/manual/external-secrets/inventory.yaml
+#
+# PHASE C — référencé depuis la kustomization de l'application À LA PLACE
+# de `external-secrets/store`, après validation des valeurs (test-sync).
+# Procédure : docs/security/secrets-migration.md
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - store
+  - edot-kafka-credentials.externalsecret.yaml
+  - edot-elasticsearch-credentials.externalsecret.yaml

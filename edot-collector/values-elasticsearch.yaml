@@ -1,0 +1,145 @@
+# =============================================================================
+# Exporter Elasticsearch — cluster Elasticsearch 9.x EXTERNE — fichier n°4
+# =============================================================================
+# Composant `elasticsearch` (exporter) de l'EDOT Collector 9.5.6 =
+# opentelemetry-collector-contrib v0.163.0. Options :
+#   https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/v0.163.0/exporter/elasticsearchexporter/README.md
+#
+# ┌──────────────────────────────────────────────────────────────────────────┐
+# │ Les valeurs TODO_* sont des PLACEHOLDERS volontairement INVALIDES :      │
+# │ configuration refusée tant qu'il en reste une (TODO.md, preflight.sh).   │
+# └──────────────────────────────────────────────────────────────────────────┘
+#
+# Elasticsearch est joint par son adresse EXTERNE (DNS du cluster, d'un
+# load balancer ou d'un reverse proxy), en HTTPS, jamais par un Service
+# Kubernetes. Aucun index template, data stream, ILM ni pipeline n'est créé
+# par ce dépôt : prérequis côté Elasticsearch, README §13.
+
+config:
+  exporters:
+    elasticsearch:
+      # ── Destination ────────────────────────────────────────────────────
+      # Plusieurs URL : utilisées en round-robin, une URL en échec est mise
+      # de côté puis réessayée. Derrière un load balancer, une seule URL.
+      endpoints:
+        - https://TODO_ELASTICSEARCH_HOST_1:TODO_ELASTICSEARCH_PORT
+        - https://TODO_ELASTICSEARCH_HOST_2:TODO_ELASTICSEARCH_PORT
+      # Découverte des nœuds DÉSACTIVÉE : elle remplacerait les URL
+      # configurées par les adresses de publication internes des nœuds
+      # (contournement du load balancer, adresses souvent non routables ou
+      # non autorisées par le pare-feu depuis OpenShift).
+      discover:
+        on_start: false
+        interval: 0s
+
+      # ── Authentification : API Key encodée (id:api_key en base64) ──────
+      # Variable issue du Secret edot-elasticsearch-credentials (Vault).
+      # Privilèges minimaux de la clé : README §13.
+      api_key: ${env:ELASTICSEARCH_API_KEY}
+
+      # ── TLS : vérification du certificat et du nom d'hôte TOUJOURS active
+      tls:
+        ca_file: /etc/edot/elasticsearch/ca.crt
+        insecure: false
+        insecure_skip_verify: false
+        min_version: "1.2"
+        reload_interval: 1h
+
+      # ── HTTP ───────────────────────────────────────────────────────────
+      # Délai d'une requête bulk (par tentative).
+      timeout: 30s
+      compression: gzip
+      # Proxy HTTP(S) sortant d'entreprise : variables HTTPS_PROXY/NO_PROXY
+      # (extraEnvs de values.yaml) — TODO.md, ligne « Proxy sortant ».
+
+      # ── Mapping natif OpenTelemetry (pas d'ECS) ────────────────────────
+      # Documents conformes au modèle OTel, data streams logs-<dataset>.otel-<namespace>,
+      # templates intégrés à Elasticsearch 9.x (logs-*.otel-*), exploitables
+      # tels quels dans Kibana / Discover.
+      mapping:
+        mode: otel
+      # Le détail d'un rejet de document ne contient pas le document lui-même
+      # (aucune donnée personnelle dans les logs du Collector).
+      include_source_on_error: false
+
+      # ── Erreurs et retries ─────────────────────────────────────────────
+      # Politique (README §19.3) :
+      #   * transitoires — 429 (saturation), 502/503/504, timeout de
+      #     connexion, connexion refusée, erreur réseau : retentées avec
+      #     backoff exponentiel (1 s → 1 min) pendant ~14 jours au plus, soit
+      #     au-delà de la rétention Kafka usuelle : la file se remplit, puis
+      #     la consommation Kafka s'arrête (backpressure). Rien n'est perdu
+      #     tant que la cause disparaît avant ce délai.
+      #   * 401 / 403 au niveau de la REQUÊTE (clé révoquée ou expirée,
+      #     privilège manquant, refus d'un proxy) : retentées aussi. Ces
+      #     erreurs ne se corrigent PAS seules : c'est un « arrêt de la
+      #     chaîne » volontaire, l'alerte EdotElasticsearchExportBlocked
+      #     prévient et la reprise est automatique une fois la clé corrigée.
+      #     Pour préférer l'abandon des lots (puis rejeu Kafka), retirer 401
+      #     et 403 de retry_on_status.
+      #   * définitives — 400 (mapping, document invalide), 404, 413 :
+      #     JAMAIS retentées. Au niveau DOCUMENT, Elasticsearch peut les
+      #     rediriger vers le failure store du data stream (quarantaine côté
+      #     Elasticsearch, s'il est activé) ; sinon le document est abandonné
+      #     et compté (otelcol_elasticsearch_docs_processed{outcome="failed_client"}).
+      #   * erreurs par document dans une réponse bulk 200 : seul 429 est
+      #     retenté (retry_on_document_status), pour qu'un document refusé
+      #     (403 sur un index non autorisé) ne bloque pas toute la chaîne.
+      retry:
+        enabled: true
+        initial_interval: 1s
+        max_interval: 1m
+        # Backoff plafonné à 1 min avec gigue (moyenne ~45 s) : ~14 jours.
+        max_retries: 27000
+        retry_on_status:
+          - 401
+          - 403
+          - 429
+          - 502
+          - 503
+          - 504
+        retry_on_document_status:
+          - 429
+
+      # ── File d'attente persistante, batching, backpressure ─────────────
+      sending_queue:
+        enabled: true
+        # File sur le PVC (extension file_storage/queue de values.yaml) :
+        # survit au redémarrage du pod.
+        storage: file_storage/queue
+        # Lots en attente mesurés en octets (modèle pdata) : 2 Gio au plus
+        # par réplica (PVC de 10 Gi : marge pour bbolt et la compaction).
+        sizer: bytes
+        queue_size: 2147483648
+        # File pleine : le receiver est BLOQUÉ (backpressure jusqu'à Kafka)
+        # au lieu de refuser ou d'abandonner les données.
+        block_on_overflow: true
+        # Requêtes bulk simultanées par réplica vers Elasticsearch.
+        num_consumers: 8
+        # Retour au receiver dès l'écriture dans la file persistante.
+        wait_for_result: false
+        batch:
+          # Lots de 1 à 5 Mo (recommandation de l'exporter : < 5 Mo,
+          # nettement sous http.max_content_length), au plus 5 s d'attente.
+          flush_timeout: 5s
+          sizer: bytes
+          min_size: 1000000
+          max_size: 5000000
+
+  processors:
+    # ── Destination : data stream logs-<dataset>.otel-<namespace> ────────
+    # ELASTICSEARCH_DATA_STREAM. Routage dynamique de l'exporter : un
+    # producteur qui fournit déjà data_stream.dataset / data_stream.namespace
+    # (attribut de log, de scope ou de ressource) est respecté ; sinon les
+    # valeurs ci-dessous s'appliquent. En mode otel, l'exporter ajoute
+    # « .otel » au dataset : dataset "app" → data stream logs-app.otel-<namespace>.
+    # Valeurs autorisées : minuscules, sans espace ni « - » dans le dataset
+    # (convention Elastic). Les privilèges de l'API Key bornent les data
+    # streams réellement accessibles (README §13).
+    transform/routing:
+      error_mode: ignore
+      log_statements:
+        - context: resource
+          statements:
+            - set(attributes["data_stream.dataset"], "TODO_ELASTICSEARCH_DATASET") where attributes["data_stream.dataset"] == nil
+            - set(attributes["data_stream.namespace"], "TODO_ELASTICSEARCH_NAMESPACE") where attributes["data_stream.namespace"] == nil

@@ -1,0 +1,10 @@
+# Généré par scripts/vault-secrets.py render depuis infra/manual/external-secrets/inventory.yaml
+#
+# PHASE B — à référencer seul (`- external-secrets/store`) : crée l'identité
+# et le SecretStore, sans toucher à aucun Secret.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - serviceaccount.yaml
+  - secretstore.yaml

@@ -1,0 +1,57 @@
+{
+  "description": "Ressource service.name=excluded-service : supprimé par filter/resource",
+  "expect": {
+    "indexed": false,
+    "filter": "filter/resource"
+  },
+  "message": {
+    "resourceLogs": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "excluded-service"
+              }
+            },
+            {
+              "key": "deployment.environment.name",
+              "value": {
+                "stringValue": "functional-test"
+              }
+            }
+          ]
+        },
+        "scopeLogs": [
+          {
+            "scope": {
+              "name": "edot.functional.test",
+              "version": "1.0.0",
+              "attributes": []
+            },
+            "logRecords": [
+              {
+                "timeUnixNano": "1763560800000000000",
+                "observedTimeUnixNano": "1763560800000000000",
+                "severityNumber": 9,
+                "severityText": "INFO",
+                "body": {
+                  "stringValue": "Batch tick"
+                },
+                "attributes": [
+                  {
+                    "key": "test.case",
+                    "value": {
+                      "stringValue": "t03"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

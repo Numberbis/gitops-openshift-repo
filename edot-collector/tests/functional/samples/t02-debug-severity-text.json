@@ -1,0 +1,57 @@
+{
+  "description": "Libellé « debug » sans severityNumber : supprimé par filter/severity",
+  "expect": {
+    "indexed": false,
+    "filter": "filter/severity"
+  },
+  "message": {
+    "resourceLogs": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "application-test"
+              }
+            },
+            {
+              "key": "deployment.environment.name",
+              "value": {
+                "stringValue": "functional-test"
+              }
+            }
+          ]
+        },
+        "scopeLogs": [
+          {
+            "scope": {
+              "name": "edot.functional.test",
+              "version": "1.0.0",
+              "attributes": []
+            },
+            "logRecords": [
+              {
+                "timeUnixNano": "1763560800000000000",
+                "observedTimeUnixNano": "1763560800000000000",
+                "severityNumber": 0,
+                "severityText": "debug",
+                "body": {
+                  "stringValue": "Entering handler"
+                },
+                "attributes": [
+                  {
+                    "key": "test.case",
+                    "value": {
+                      "stringValue": "t02"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

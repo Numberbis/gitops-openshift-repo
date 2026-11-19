@@ -1,0 +1,375 @@
+# =============================================================================
+# EDOT Collector — values de BASE du chart officiel
+# open-telemetry/opentelemetry-collector (chart 0.178.3)
+# =============================================================================
+# Passerelle d'ingestion de logs : Kafka EXTERNE (OTLP JSON) → filtrage et
+# suppression de champs (OTTL) → Elasticsearch 9.x EXTERNE.
+#
+# Application Argo CD : argocd/applications/infra/edot-collector.yaml. Les
+# fichiers de values sont fusionnés dans CET ordre (une clé d'un fichier
+# suivant remplace celle d'un fichier précédent ; les LISTES sont remplacées,
+# pas fusionnées) :
+#
+#   1. values.yaml               (ce fichier) déploiement, ressources, PVC,
+#                                 supervision, références aux Secrets, pipeline
+#   2. values-openshift.yaml     profil plateforme : securityContext SCC
+#      (ou values-kubernetes.yaml pour un cluster Kubernetes non OpenShift)
+#   3. values-kafka.yaml         receiver Kafka            ← contient des TODO
+#   4. values-elasticsearch.yaml exporter Elasticsearch    ← contient des TODO
+#   5. values-processing.yaml    filtres et suppressions OTTL
+#
+# Paramètres à renseigner avant toute mise en service : TODO.md.
+# Architecture, choix et exploitation : README.md.
+#
+# Référence du chart :
+#   helm show values opentelemetry-collector \
+#     --repo https://open-telemetry.github.io/opentelemetry-helm-charts --version 0.178.3
+#
+# Le chart applique `tpl` à `config` : ne JAMAIS écrire « {{ » dans une
+# expression OTTL ou une valeur de configuration.
+
+# ── Image EDOT ───────────────────────────────────────────────────────────────
+# Image officielle Elastic dédiée au mode OpenTelemetry d'Elastic Agent
+# (EDOT Collector), base UBI 9 minimal, signée (cosign). 9.5.6 = dernière
+# version dont l'IMAGE est publiée au 2026-11-19 (9.5.7 et 9.6.0 n'existent
+# encore qu'en artefacts) ; elle embarque le Collector OpenTelemetry v0.163.0.
+# Digest vérifié par tests/validate-config.sh :
+#   sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1
+# Registre interne / miroir (OpenShift déconnecté) : surcharger `repository`
+# (TODO.md, ligne « Registre d'images »). JAMAIS de tag `latest`.
+image:
+  repository: docker.elastic.co/elastic-agent/elastic-otel-collector
+  tag: "9.5.6"
+  pullPolicy: IfNotPresent
+
+# Commande : le chart lance « /<command.name> --config=/conf/relay.yaml ».
+# `otelcol` est le lanceur fourni par Elastic (exec elastic-agent otel "$@") :
+# mode autonome pur, aucun enrôlement Fleet, aucun fichier elastic-agent.yml.
+# Ne PAS utiliser `otelcol-contrib` : ce binaire n'existe pas dans l'image.
+command:
+  name: usr/share/elastic-agent/otelcol
+
+# ── Mode de déploiement ──────────────────────────────────────────────────────
+# StatefulSet : un PVC par réplica (file d'attente persistante file_storage)
+# et un nom de pod stable, utilisé comme group_instance_id Kafka (membre
+# statique : un redémarrage court ne déclenche pas de rebalance).
+# Tous les réplicas partagent le MÊME consumer group : Kafka répartit les
+# partitions entre eux. Au-delà du nombre de partitions des topics, un
+# réplica supplémentaire reste inactif (README §11).
+mode: statefulset
+replicaCount: 2
+
+# Objets nommés « edot-collector » (StatefulSet, Service, ServiceAccount,
+# ConfigMap edot-collector-statefulset, PVC queue-edot-collector-<n>).
+fullnameOverride: edot-collector
+
+statefulset:
+  # Démarrage/arrêt des pods en parallèle : aucun ordre n'est nécessaire.
+  podManagementPolicy: Parallel
+  # Les PVC ne sont JAMAIS supprimés automatiquement : ni à la suppression du
+  # StatefulSet, ni lors d'une réduction du nombre de réplicas (une file non
+  # vidée y resterait). Suppression manuelle uniquement (README §14).
+  persistentVolumeClaimRetentionPolicy:
+    enabled: true
+    whenDeleted: Retain
+    whenScaled: Retain
+  # ATTENTION : volumeClaimTemplates est IMMUABLE dans un StatefulSet.
+  # Modifier taille ou StorageClass impose une procédure (README §14).
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: queue
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        # Explicité : valeur par défaut de l'API server, évite un OutOfSync
+        # Argo CD permanent.
+        volumeMode: Filesystem
+        # StorageClass : celle par défaut du cluster si absent. À fixer
+        # explicitement en production (TODO.md, ligne « StorageClass »).
+        # storageClassName: TODO_STORAGE_CLASS
+        resources:
+          requests:
+            # Dimensionnement initial, à ajuster après mesure du débit
+            # (README §14) : la file est plafonnée à 2 Gio dans
+            # values-elasticsearch.yaml, le reste couvre la fragmentation
+            # bbolt et la compaction (copie temporaire sur le même volume).
+            storage: 10Gi
+
+# ── Identité et accès à l'API Kubernetes ────────────────────────────────────
+# Le Collector n'appelle PAS l'API Kubernetes (aucun k8s_attributes, aucun
+# leader election) : ServiceAccount dédié, SANS jeton monté, sans aucun RBAC.
+serviceAccount:
+  create: true
+  automountServiceAccountToken: false
+clusterRole:
+  create: false
+
+# Tous les presets restent désactivés (défaut du chart) : ils ajoutent des
+# hostPath, des droits RBAC et des récepteurs inutiles pour une passerelle.
+
+# Les composants renommés (snake_case) sont réécrits par le chart ; les noms
+# utilisés dans ces fichiers sont déjà les noms actuels (v0.163.0).
+rewriteDeprecatedComponentNames: true
+
+# Un changement de `config` modifie l'annotation checksum du pod : Argo CD
+# déclenche alors un rolling update du StatefulSet (défaut, explicité).
+enableConfigChecksumAnnotation: true
+
+# ── Références aux Secrets (valeurs JAMAIS dans Git) ─────────────────────────
+# Secrets créés par External Secrets Operator depuis Vault
+# (external-secrets/, chemins secret/kubernetes/edot/<secret>). Tant que les
+# valeurs ne sont pas dans Vault, ces Secrets n'existent pas et les pods
+# restent en CreateContainerConfigError : AUCUNE connexion n'est tentée.
+# Procédure de création : README §10.
+extraEnvs:
+  - name: KAFKA_USERNAME
+    valueFrom:
+      secretKeyRef:
+        name: edot-kafka-credentials
+        key: username
+  - name: KAFKA_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: edot-kafka-credentials
+        key: password
+  - name: ELASTICSEARCH_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: edot-elasticsearch-credentials
+        key: api-key
+
+extraVolumes:
+  # Autorités de certification (certificats PUBLICS) montées en fichiers.
+  # Seule la clé ca.crt est projetée : les identifiants du même Secret ne
+  # sont pas exposés dans le système de fichiers du conteneur.
+  - name: kafka-ca
+    secret:
+      secretName: edot-kafka-credentials
+      defaultMode: 0440
+      items:
+        - key: ca.crt
+          path: ca.crt
+  - name: elasticsearch-ca
+    secret:
+      secretName: edot-elasticsearch-credentials
+      defaultMode: 0440
+      items:
+        - key: ca.crt
+          path: ca.crt
+  # /tmp inscriptible (rootfs en lecture seule), borné.
+  - name: tmp
+    emptyDir:
+      sizeLimit: 64Mi
+
+extraVolumeMounts:
+  - name: queue
+    mountPath: /var/lib/edot
+  - name: kafka-ca
+    mountPath: /etc/edot/kafka
+    readOnly: true
+  - name: elasticsearch-ca
+    mountPath: /etc/edot/elasticsearch
+    readOnly: true
+  - name: tmp
+    mountPath: /tmp
+
+# ── Ressources ───────────────────────────────────────────────────────────────
+# Point de départ, à ajuster d'après otelcol_process_memory_rss_bytes,
+# otelcol_process_cpu_seconds_total et le consumer lag (README §15).
+# Le chart positionne GOMEMLIMIT à 80 % de limits.memory (useGOMEMLIMIT) ;
+# memory_limiter (values-processing.yaml) refuse les données au-delà de 75 %.
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    cpu: "2"
+    memory: 3Gi
+useGOMEMLIMIT: true
+
+# ── Probes (extension health_check, port 13133) ─────────────────────────────
+startupProbe:
+  periodSeconds: 5
+  failureThreshold: 24       # 2 min pour démarrer (ouverture et compaction de la file)
+  httpGet:
+    path: /
+    port: 13133
+livenessProbe:
+  periodSeconds: 15
+  timeoutSeconds: 5
+  failureThreshold: 4
+  httpGet:
+    path: /
+    port: 13133
+readinessProbe:
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+  httpGet:
+    path: /
+    port: 13133
+
+# Arrêt propre : le receiver cesse de consommer et valide ses offsets, la
+# file persistante reste sur le PVC (reprise au redémarrage), la requête bulk
+# en cours a jusqu'à `timeout` (30 s) pour aboutir.
+terminationGracePeriodSeconds: 60
+
+# ── Haute disponibilité ──────────────────────────────────────────────────────
+# Un seul pod indisponible à la fois (drain d'un worker, rolling update).
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+# Répartition sur des workers distincts, puis des zones distinctes si elles
+# existent. ScheduleAnyway : si un seul worker est disponible, les deux pods
+# y démarrent quand même (mieux qu'un pod Pending ; alerte de répartition
+# via kube-state-metrics si besoin).
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: opentelemetry-collector
+        app.kubernetes.io/instance: edot-collector
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: opentelemetry-collector
+        app.kubernetes.io/instance: edot-collector
+
+rollout:
+  strategy: RollingUpdate
+
+# ── Réseau ───────────────────────────────────────────────────────────────────
+# EDOT n'ouvre AUCUN port de réception : il initie les connexions vers Kafka
+# et Elasticsearch. Seul le port des métriques internes est exposé, en
+# ClusterIP, pour Prometheus. Ni Route, ni Ingress, ni LoadBalancer.
+ports:
+  otlp:
+    enabled: false
+  otlp-http:
+    enabled: false
+  jaeger-compact:
+    enabled: false
+  jaeger-thrift:
+    enabled: false
+  jaeger-grpc:
+    enabled: false
+  zipkin:
+    enabled: false
+  metrics:
+    enabled: true
+service:
+  type: ClusterIP
+ingress:
+  enabled: false
+httproute:
+  enabled: false
+# NetworkPolicies du dépôt (network-policies/), pas celle du chart.
+networkPolicy:
+  enabled: false
+hostNetwork: false
+
+# ── Supervision ──────────────────────────────────────────────────────────────
+# Métriques internes (:8888) scrapées par Prometheus. Le label release est la
+# convention de découverte du kube-prometheus-stack de ce dépôt ; il est sans
+# effet sur la supervision des projets utilisateur d'OpenShift (README §15).
+serviceMonitor:
+  enabled: true
+  metricsEndpoints:
+    - port: metrics
+      interval: 30s
+  extraLabels:
+    release: kube-prometheus-stack
+# Alertes : prometheusrule.yaml du dépôt, pas celles du chart.
+prometheusRule:
+  enabled: false
+
+# ── Configuration du Collector : squelette ───────────────────────────────────
+# Les composants sont définis dans les fichiers spécialisés (kafka,
+# elasticsearch, processing). Ici : nettoyage des valeurs par défaut du chart,
+# extensions, télémétrie interne et câblage du pipeline.
+config:
+  receivers:
+    # Récepteurs par défaut du chart : retirés (aucun port d'écoute).
+    jaeger: null
+    otlp: null
+    prometheus: null
+    zipkin: null
+  processors:
+    # Le regroupement est fait par la sending_queue de l'exporter
+    # Elasticsearch (recommandation Elastic) : processor batch retiré.
+    batch: null
+  exporters:
+    # Le debug exporter écrirait les logs (données personnelles) dans les
+    # logs du pod : retiré. Diagnostic ponctuel : README §18.
+    debug: null
+
+  extensions:
+    health_check:
+      endpoint: ${env:MY_POD_IP}:13133
+    # File d'attente persistante de l'exporter Elasticsearch, sur le PVC.
+    # fsync: true — une écriture n'est confirmée (et l'offset Kafka validé)
+    # qu'une fois sur disque : survit à un arrêt brutal du nœud.
+    # Compaction : le fichier bbolt ne rétrécit jamais seul ; compaction au
+    # démarrage et quand la file s'est vidée (on_rebound), dans le MÊME
+    # volume (renommage atomique).
+    file_storage/queue:
+      directory: /var/lib/edot/queue
+      create_directory: true
+      directory_permissions: "0770"
+      timeout: 5s
+      fsync: true
+      compaction:
+        on_start: true
+        on_rebound: true
+        directory: /var/lib/edot/queue
+        rebound_needed_threshold_mib: 100
+        rebound_trigger_threshold_mib: 10
+        check_interval: 5s
+        max_transaction_size: 65536
+        cleanup_on_start: true
+
+  service:
+    extensions:
+      - health_check
+      - file_storage/queue
+    telemetry:
+      logs:
+        level: info
+        encoding: json
+      metrics:
+        # `detailed` : nécessaire aux métriques par topic/partition du
+        # receiver Kafka (offset_lag) et aux histogrammes de l'exporter.
+        level: detailed
+        readers:
+          - pull:
+              exporter:
+                prometheus:
+                  host: ${env:MY_POD_IP}
+                  port: 8888
+    pipelines:
+      # Ordre IMPÉRATIF : memory_limiter d'abord ; filtres AVANT suppression
+      # de champs (une règle de filtre peut porter sur un champ supprimé) ;
+      # routage (data stream) en dernier.
+      logs:
+        receivers:
+          - kafka
+        processors:
+          - memory_limiter
+          - filter/severity
+          - filter/resource
+          - filter/log-attributes
+          - filter/values
+          - transform/redact
+          - transform/routing
+        exporters:
+          - elasticsearch
+      # Pipelines par défaut du chart (vers debug) : retirés.
+      metrics: null
+      traces: null

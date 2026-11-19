@@ -1,0 +1,41 @@
+# EDOT -> brokers Kafka EXTERNES (SASL_SSL).
+#
+# ATTENTION : le client contacte d'abord les brokers de bootstrap, PUIS les
+# adresses annoncées par chaque broker (advertised.listeners). Les CIDR
+# ci-dessous doivent couvrir TOUTES les adresses IP résolues de ces noms
+# (bootstrap + chaque broker annoncé), et le port de CHAQUE listener utilisé.
+# Vérification : tests/network-diagnostics.sh kafka.
+#
+# Une NetworkPolicy standard ne filtre que par IP (pas par nom DNS) : si les
+# IP des brokers changent, mettre à jour ces CIDR. Sur OpenShift,
+# EgressFirewall (OVN-Kubernetes) accepte des noms DNS : alternative
+# documentée README §7, non créée ici (objet cluster-scope / réseau à
+# valider par l'équipe plateforme).
+#
+# TODO : CIDR et port(s) des brokers (TODO.md, lignes « Kafka brokers » et
+# « Kafka advertised listeners »). Tant que ces TODO restent, l'objet est
+# invalide et refusé par l'API server.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-kafka
+  labels:
+    network-policy-phase: allow
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/instance
+        operator: In
+        values:
+          - edot-collector
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: TODO_KAFKA_BROKERS_CIDR_1
+        - ipBlock:
+            cidr: TODO_KAFKA_BROKERS_CIDR_2
+      ports:
+        - protocol: TCP
+          port: TODO_KAFKA_PORT

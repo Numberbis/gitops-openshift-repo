@@ -1,0 +1,100 @@
+{
+  "description": "Un message, trois enregistrements : seul l'INFO est conservé (filtrage par enregistrement)",
+  "expect": {
+    "indexed": true,
+    "count": 1,
+    "present": {
+      "body.text": "Kept among mixed records"
+    }
+  },
+  "message": {
+    "resourceLogs": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "application-test"
+              }
+            },
+            {
+              "key": "deployment.environment.name",
+              "value": {
+                "stringValue": "functional-test"
+              }
+            }
+          ]
+        },
+        "scopeLogs": [
+          {
+            "scope": {
+              "name": "edot.functional.test",
+              "version": "1.0.0",
+              "attributes": []
+            },
+            "logRecords": [
+              {
+                "timeUnixNano": "1763560800000000000",
+                "observedTimeUnixNano": "1763560800000000000",
+                "severityNumber": 5,
+                "severityText": "DEBUG",
+                "body": {
+                  "stringValue": "Dropped debug among mixed"
+                },
+                "attributes": [
+                  {
+                    "key": "test.case",
+                    "value": {
+                      "stringValue": "t12"
+                    }
+                  }
+                ]
+              },
+              {
+                "timeUnixNano": "1763560800000000000",
+                "observedTimeUnixNano": "1763560800000000000",
+                "severityNumber": 9,
+                "severityText": "INFO",
+                "body": {
+                  "stringValue": "Kept among mixed records"
+                },
+                "attributes": [
+                  {
+                    "key": "test.case",
+                    "value": {
+                      "stringValue": "t12"
+                    }
+                  }
+                ]
+              },
+              {
+                "timeUnixNano": "1763560800000000000",
+                "observedTimeUnixNano": "1763560800000000000",
+                "severityNumber": 9,
+                "severityText": "INFO",
+                "body": {
+                  "stringValue": "GET /healthz"
+                },
+                "attributes": [
+                  {
+                    "key": "test.case",
+                    "value": {
+                      "stringValue": "t12"
+                    }
+                  },
+                  {
+                    "key": "http.route",
+                    "value": {
+                      "stringValue": "/healthz"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

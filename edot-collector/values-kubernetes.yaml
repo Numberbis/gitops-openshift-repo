@@ -1,0 +1,32 @@
+# =============================================================================
+# Profil plateforme KUBERNETES STANDARD (non OpenShift) — fichier n°2
+# =============================================================================
+# À utiliser À LA PLACE de values-openshift.yaml sur un cluster sans SCC
+# (kubeadm, kind, cluster homelab de ce dépôt), dans un namespace en Pod
+# Security « restricted ».
+#
+# L'image déclare un utilisateur NON NUMÉRIQUE (USER elastic-agent) : sans
+# runAsUser explicite, le kubelet refuse runAsNonRoot (« image has non-numeric
+# user, cannot verify user is non-root »). OpenShift n'a pas ce problème car
+# la SCC injecte l'UID. L'image fonctionne avec un UID arbitraire (vérifié) :
+# 10001, hors de la plage des comptes système et des UID d'hôte usuels
+# (contrôle trivy KSV-0020/0021), plutôt que l'UID 1000 de l'image.
+# fsGroup 10001 rend le PVC inscriptible.
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  privileged: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  capabilities:
+    drop:
+      - ALL

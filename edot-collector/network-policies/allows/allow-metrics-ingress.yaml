@@ -1,0 +1,34 @@
+# Prometheus -> EDOT :8888 (/metrics, ServiceMonitor du chart).
+#
+# Deux sources possibles selon la plateforme :
+#   * namespace monitoring : kube-prometheus-stack de ce dépôt ;
+#   * namespace openshift-user-workload-monitoring : supervision des projets
+#     utilisateur d'OpenShift (prometheus-user-workload).
+# Aucun autre port n'est ouvert : EDOT ne reçoit aucune donnée en entrée.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-metrics-ingress
+  labels:
+    network-policy-phase: allow
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/instance
+        operator: In
+        values:
+          - edot-collector
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values:
+                  - monitoring
+                  - openshift-user-workload-monitoring
+      ports:
+        - protocol: TCP
+          port: 8888

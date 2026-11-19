@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# NetworkPolicies du namespace edot : DEFAULT DENY dès le premier déploiement
+# (namespace neuf, flux entièrement connus : pas de phase « transition »).
+#
+# Flux autorisés (README §7) :
+#   edot-collector  -> DNS du cluster              :53 / :5353 (OpenShift)
+#   edot-collector  -> brokers Kafka EXTERNES      TODO (bootstrap ET advertised.listeners)
+#   edot-collector  -> Elasticsearch EXTERNE       TODO (HTTPS)
+#   Prometheus      -> edot-collector              :8888 /metrics
+# Aucun autre flux : ni API Kubernetes, ni Internet, ni autres namespaces.
+#
+# Les blocs `ipBlock` des sorties externes contiennent des TODO : le sync
+# Argo CD de ces deux objets ÉCHOUE tant qu'ils ne sont pas renseignés
+# (CIDR invalide), ce qui empêche aussi une activation accidentelle.
+#
+# Les NetworkPolicies ne remplacent pas les pare-feu entre OpenShift et les
+# infrastructures Kafka/Elasticsearch (adresses de sortie / EgressIP, ports) :
+# TODO.md et README §7.
+namespace: edot
+
+resources:
+  - default-deny.yaml
+  - allows/allow-dns.yaml
+  - allows/allow-egress-kafka.yaml
+  - allows/allow-egress-elasticsearch.yaml
+  - allows/allow-metrics-ingress.yaml

@@ -1,0 +1,204 @@
+{
+  "description": "Champs sensibles IMBRIQUÉS dans un Body structuré et un attribut objet : seuls ces champs disparaissent",
+  "expect": {
+    "indexed": true,
+    "absent": [
+      "body.structured.user.email",
+      "body.structured.client.ip",
+      "body.structured.http.request.headers.authorization",
+      "body.structured.user.email",
+      "attributes.user.email"
+    ],
+    "present": {
+      "body.structured.message": "Paiement accepté",
+      "body.structured.user.name": "Test User",
+      "body.structured.client.port": 51544,
+      "body.structured.http.request.headers.accept": "application/json",
+      "body.structured.http.request.method": "POST",
+      "body.structured.order.amount": 42.5,
+      "attributes.user.id": "u-5678"
+    }
+  },
+  "message": {
+    "resourceLogs": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "application-test"
+              }
+            },
+            {
+              "key": "deployment.environment.name",
+              "value": {
+                "stringValue": "functional-test"
+              }
+            }
+          ]
+        },
+        "scopeLogs": [
+          {
+            "scope": {
+              "name": "edot.functional.test",
+              "version": "1.0.0",
+              "attributes": []
+            },
+            "logRecords": [
+              {
+                "timeUnixNano": "1763560800000000000",
+                "observedTimeUnixNano": "1763560800000000000",
+                "severityNumber": 9,
+                "severityText": "INFO",
+                "body": {
+                  "kvlistValue": {
+                    "values": [
+                      {
+                        "key": "message",
+                        "value": {
+                          "stringValue": "Paiement accepté"
+                        }
+                      },
+                      {
+                        "key": "user",
+                        "value": {
+                          "kvlistValue": {
+                            "values": [
+                              {
+                                "key": "email",
+                                "value": {
+                                  "stringValue": "test@example.com"
+                                }
+                              },
+                              {
+                                "key": "name",
+                                "value": {
+                                  "stringValue": "Test User"
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "key": "client",
+                        "value": {
+                          "kvlistValue": {
+                            "values": [
+                              {
+                                "key": "ip",
+                                "value": {
+                                  "stringValue": "192.0.2.10"
+                                }
+                              },
+                              {
+                                "key": "port",
+                                "value": {
+                                  "intValue": "51544"
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "key": "http",
+                        "value": {
+                          "kvlistValue": {
+                            "values": [
+                              {
+                                "key": "request",
+                                "value": {
+                                  "kvlistValue": {
+                                    "values": [
+                                      {
+                                        "key": "method",
+                                        "value": {
+                                          "stringValue": "POST"
+                                        }
+                                      },
+                                      {
+                                        "key": "headers",
+                                        "value": {
+                                          "kvlistValue": {
+                                            "values": [
+                                              {
+                                                "key": "authorization",
+                                                "value": {
+                                                  "stringValue": "Basic dGVzdDp0ZXN0"
+                                                }
+                                              },
+                                              {
+                                                "key": "accept",
+                                                "value": {
+                                                  "stringValue": "application/json"
+                                                }
+                                              }
+                                            ]
+                                          }
+                                        }
+                                      }
+                                    ]
+                                  }
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "key": "order",
+                        "value": {
+                          "kvlistValue": {
+                            "values": [
+                              {
+                                "key": "amount",
+                                "value": {
+                                  "doubleValue": 42.5
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "attributes": [
+                  {
+                    "key": "test.case",
+                    "value": {
+                      "stringValue": "t09"
+                    }
+                  },
+                  {
+                    "key": "user",
+                    "value": {
+                      "kvlistValue": {
+                        "values": [
+                          {
+                            "key": "email",
+                            "value": {
+                              "stringValue": "test@example.com"
+                            }
+                          },
+                          {
+                            "key": "id",
+                            "value": {
+                              "stringValue": "u-5678"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,145 @@
+# =============================================================================
+# Receiver Kafka — cluster Kafka EXTERNE à OpenShift — fichier n°3
+# =============================================================================
+# Composant `kafka` (receiver, client franz-go) de l'EDOT Collector 9.5.6 =
+# opentelemetry-collector-contrib v0.163.0. Options :
+#   https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/v0.163.0/receiver/kafkareceiver/README.md
+#
+# ┌──────────────────────────────────────────────────────────────────────────┐
+# │ Les valeurs TODO_* sont des PLACEHOLDERS, pas des valeurs par défaut.    │
+# │ Elles sont volontairement INVALIDES : tant qu'il en reste une, la        │
+# │ configuration est refusée par `elastic-agent otel validate` et le        │
+# │ Collector ne démarre pas (vérifié par tests/validate-config.sh).         │
+# │ Liste complète et procédure : TODO.md. Contrôle : tests/preflight.sh.    │
+# └──────────────────────────────────────────────────────────────────────────┘
+#
+# Les brokers sont joints par leurs adresses EXTERNES (DNS ou IP routables
+# depuis les pods OpenShift), jamais par un Service Kubernetes. ATTENTION :
+# après le bootstrap, le client se connecte aux adresses annoncées par les
+# brokers (advertised.listeners) : CHACUNE doit être résolue et joignable
+# depuis les pods (README §7, tests/network-diagnostics.sh).
+
+config:
+  receivers:
+    kafka:
+      # ── Connexion ──────────────────────────────────────────────────────
+      # Brokers de BOOTSTRAP : au moins deux, pour que le démarrage ne dépende
+      # pas d'un seul broker. Le client découvre ensuite tous les brokers.
+      brokers:
+        - TODO_KAFKA_BROKER_1:TODO_KAFKA_PORT
+        - TODO_KAFKA_BROKER_2:TODO_KAFKA_PORT
+        - TODO_KAFKA_BROKER_3:TODO_KAFKA_PORT
+      # Identifiant client, visible côté brokers (logs, quotas) : un par pod.
+      client_id: edot-${env:OTEL_K8S_POD_NAME}
+
+      # ── Sécurité : KAFKA_SECURITY_PROTOCOL = SASL_SSL ──────────────────
+      # La présence du bloc `tls` active TLS ; le bloc `auth.sasl` active
+      # SASL. Correspondance avec security.protocol : README §9. PLAINTEXT
+      # et SASL_PLAINTEXT sont exclus (pas de TLS désactivé).
+      tls:
+        # Autorité de certification des brokers (clé ca.crt du Secret
+        # edot-kafka-credentials, alimenté depuis Vault).
+        ca_file: /etc/edot/kafka/ca.crt
+        # Vérification du certificat et du nom d'hôte : TOUJOURS active.
+        insecure: false
+        insecure_skip_verify: false
+        min_version: "1.2"
+        # Relecture périodique de la CA (rotation sans redémarrage).
+        reload_interval: 1h
+        # mTLS (security.protocol=SSL avec certificat client) : README §9.
+      auth:
+        sasl:
+          # Variables d'environnement issues du Secret edot-kafka-credentials.
+          username: ${env:KAFKA_USERNAME}
+          password: ${env:KAFKA_PASSWORD}
+          # SCRAM-SHA-512, SCRAM-SHA-256 ou PLAIN (PLAIN uniquement sous TLS).
+          mechanism: TODO_KAFKA_SASL_MECHANISM
+
+      # ── Consumer group ─────────────────────────────────────────────────
+      # Groupe DÉDIÉ à EDOT, partagé par tous les réplicas. Ne JAMAIS
+      # réutiliser le groupe d'un consommateur existant (pipelines Logstash) :
+      # les deux se partageraient les partitions et chacun manquerait des
+      # messages.
+      group_id: TODO_KAFKA_CONSUMER_GROUP
+      # Membre statique (KIP-345) : le nom stable du pod du StatefulSet.
+      # Un pod qui redémarre en moins de session_timeout retrouve ses
+      # partitions sans rebalance du groupe.
+      group_instance_id: ${env:OTEL_K8S_POD_NAME}
+      # Délai après lequel un pod disparu (worker perdu) est exclu du groupe
+      # et ses partitions réattribuées aux autres réplicas. Doit rester entre
+      # group.min/max.session.timeout.ms des brokers (6 s - 30 min par défaut).
+      session_timeout: 45s
+      heartbeat_interval: 3s
+      # Rebalance incrémental : seules les partitions déplacées sont
+      # suspendues, pas tout le groupe.
+      group_rebalance_strategies:
+        - cooperative-sticky
+
+      # ── Topics ─────────────────────────────────────────────────────────
+      logs:
+        topics:
+          - TODO_KAFKA_TOPIC
+        # Messages OTLP JSON (ExportLogsServiceRequest encodé en JSON).
+        encoding: otlp_json
+
+      # ── Offsets ────────────────────────────────────────────────────────
+      # Position de départ quand le groupe n'a AUCUN offset validé (première
+      # mise en service, ou offsets expirés côté brokers après
+      # offsets.retention.minutes sans consommateur). `latest` : pas de
+      # rejeu de toute la rétention au premier démarrage (doublons si ces
+      # logs sont déjà indexés par ailleurs). DÉCISION À CONFIRMER : TODO.md.
+      initial_offset: latest
+      # Validation des offsets : marquage APRÈS traitement, commit
+      # automatique toutes les secondes. Un message n'est marqué qu'une fois
+      # écrit dans la file PERSISTANTE de l'exporter (fsync sur le PVC), pas
+      # lorsqu'il est indexé dans Elasticsearch : README §19.
+      autocommit:
+        enable: true
+        interval: 1s
+      message_marking:
+        after: true
+        # Erreur TRANSITOIRE (mémoire saturée, file pleine) : message non
+        # marqué, retenté (error_backoff) — aucune perte, consommation ralentie.
+        on_error: false
+        # Erreur PERMANENTE = message OTLP JSON indécodable : marqué et
+        # ignoré (sinon la partition resterait bloquée indéfiniment).
+        # Compté dans otelcol_kafka_receiver_unmarshal_failed_log_records,
+        # topic/partition/offset journalisés, message toujours présent dans
+        # Kafka jusqu'à expiration de la rétention : quarantaine et rejeu,
+        # README §19.4.
+        on_permanent_error: true
+      # Erreurs transitoires : nouvelle tentative avec backoff exponentiel,
+      # SANS limite de durée (max_elapsed_time: 0) — la partition attend que
+      # la cause disparaisse plutôt que de perdre le message.
+      error_backoff:
+        enabled: true
+        initial_interval: 1s
+        max_interval: 1m
+        multiplier: 2
+        randomization_factor: 0.5
+        max_elapsed_time: 0s
+
+      # ── Débit ──────────────────────────────────────────────────────────
+      # Valeurs par défaut explicitées. Un message plus grand que
+      # max_partition_fetch_size est quand même lu (garantie de progression).
+      min_fetch_size: 1
+      max_fetch_size: 1048576
+      max_partition_fetch_size: 1048576
+      max_fetch_wait: 250ms
+
+      # ── Métadonnées et reconnexions ────────────────────────────────────
+      # Rafraîchissement de la topologie (brokers, leaders de partition).
+      # Reconnexion automatique du client à chaque broker perdu (backoff
+      # interne franz-go) ; requêtes de groupe/commit retentées `retry.max` fois.
+      metadata:
+        refresh_interval: 5m
+        retry:
+          max: 20
+          backoff: 250ms
+      conn_idle_timeout: 9m
+
+      # Délai entre production et consommation (otelcol_kafka_receiver_records_delay).
+      telemetry:
+        metrics:
+          kafka_receiver_records_delay:
+            enabled: true

@@ -1,0 +1,36 @@
+# =============================================================================
+# Profil plateforme OPENSHIFT (SCC restricted-v2) — fichier n°2
+# =============================================================================
+# Utilisé par défaut par argocd/applications/infra/edot-collector.yaml.
+# Pour un cluster Kubernetes non OpenShift : values-kubernetes.yaml À LA
+# PLACE de ce fichier (un seul profil à la fois).
+#
+# OpenShift attribue lui-même l'UID (plage du namespace,
+# openshift.io/sa.scc.uid-range), le GID supplémentaire fsGroup et le profil
+# seccomp. Fixer runAsUser/runAsGroup/fsGroup ici ferait REFUSER le pod par
+# restricted-v2 (UID hors plage) : ils sont volontairement absents.
+#
+# Compatibilité de l'image vérifiée (tests/functional, 2026-11-19) : EDOT
+# 9.5.6 démarre avec un UID arbitraire, GID 0, rootfs en lecture seule et sans
+# aucune capability ; il n'écrit que dans /var/lib/edot (PVC) et /tmp
+# (emptyDir). Le PVC est rendu inscriptible par le fsGroup que la SCC injecte :
+# AUCUN conteneur root ni initContainer chown n'est nécessaire.
+#
+# Aucune SCC personnalisée, aucun RoleBinding vers une SCC : le ServiceAccount
+# edot-collector utilise restricted-v2, attribuée par défaut.
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+  # Évite un chown récursif du PVC à chaque démarrage (file volumineuse).
+  fsGroupChangePolicy: OnRootMismatch
+
+securityContext:
+  allowPrivilegeEscalation: false
+  privileged: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  capabilities:
+    drop:
+      - ALL

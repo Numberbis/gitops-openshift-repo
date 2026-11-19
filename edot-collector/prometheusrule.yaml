@@ -1,0 +1,340 @@
+# Alertes de la chaîne d'ingestion EDOT (Kafka → EDOT → Elasticsearch).
+#
+# Évaluées par le Prometheus principal (ruleSelector release=kube-prometheus-stack).
+# Sur OpenShift (supervision des projets utilisateur), le label release est
+# sans effet : la règle est prise en compte si le namespace edot n'est pas
+# exclu de user-workload-monitoring (README §15).
+#
+# NOMS DES MÉTRIQUES : relevés sur EDOT 9.5.6 (tests/functional, 2026-11-19).
+# Les compteurs du Collector v0.163 sont exposés SANS suffixe « _total »
+# (otelcol_exporter_sent_log_records, et non ..._total), et un compteur
+# d'échec n'existe qu'après le premier échec : les expressions en tiennent
+# compte (absence = 0). Inventaire complet : README §15.
+#
+# Seuils marqués « À AJUSTER » : valeurs initiales, à recalibrer d'après le
+# débit réel (TODO.md, ligne « Seuils d'alerte »).
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: edot-collector
+  namespace: edot
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    # ── Disponibilité ──────────────────────────────────────────────────────
+    - name: edot-collector.availability
+      rules:
+        - alert: EdotCollectorDown
+          expr: |
+            absent(up{namespace="edot", service="edot-collector"} == 1)
+          for: 5m
+          labels:
+            severity: critical
+            category: security
+          annotations:
+            summary: Aucun réplica EDOT ne répond
+            description: >-
+              Plus aucun pod edot-collector n'est scrapé depuis 5 min : les
+              logs ne sont plus consommés (ils s'accumulent dans Kafka, dans
+              la limite de sa rétention). oc -n edot get pods,pvc,events ;
+              oc -n edot logs sts/edot-collector. README §18.
+
+        - alert: EdotCollectorReplicasUnavailable
+          expr: |
+            kube_statefulset_status_replicas_ready{namespace="edot", statefulset="edot-collector"}
+              < kube_statefulset_replicas{namespace="edot", statefulset="edot-collector"}
+          for: 15m
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: "EDOT : {{ $value }} réplica(s) prêt(s) seulement"
+            description: >-
+              Un réplica edot-collector n'est pas prêt depuis 15 min. Ses
+              partitions Kafka ont été réattribuées aux autres réplicas, mais
+              sa file persistante (PVC) n'est pas vidée tant qu'il ne
+              redémarre pas. README §18 (CrashLoopBackOff, PVC).
+
+        - alert: EdotCollectorRestarting
+          expr: |
+            increase(kube_pod_container_status_restarts_total{namespace="edot", container="opentelemetry-collector"}[30m]) > 2
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: "EDOT : {{ $labels.pod }} redémarre en boucle"
+            description: >-
+              Plus de 2 redémarrages en 30 min (OOMKill, configuration
+              refusée, PVC). oc -n edot logs {{ $labels.pod }} --previous.
+
+    # ── Consommation Kafka ─────────────────────────────────────────────────
+    - name: edot-collector.kafka
+      rules:
+        # Lag vu par les consommateurs (partitions assignées seulement). Le
+        # lag d'un groupe SANS consommateur actif n'est visible que côté
+        # brokers (kafka-exporter / supervision Kafka) : README §15.
+        - alert: EdotKafkaConsumerLagHigh
+          expr: |
+            sum by (topic) (otelcol_kafka_receiver_offset_lag{namespace="edot"}) > 100000
+          for: 15m
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: "EDOT : lag Kafka élevé sur {{ $labels.topic }} ({{ $value }} messages)"
+            description: >-
+              Le consumer group a plus de 100 000 messages de retard (seuil À
+              AJUSTER) depuis 15 min. Causes : export Elasticsearch ralenti ou
+              bloqué (voir EdotElasticsearch*), réplicas insuffisants, CPU
+              limité. README §18 « Consumer lag increasing ».
+
+        - alert: EdotKafkaConsumerLagGrowing
+          expr: |
+            deriv((sum(otelcol_kafka_receiver_offset_lag{namespace="edot"}))[30m:1m]) > 0
+              and sum(otelcol_kafka_receiver_offset_lag{namespace="edot"}) > 10000
+          for: 30m
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: Le lag Kafka d'EDOT augmente continûment
+            description: >-
+              Le retard augmente depuis 30 min : la consommation est plus
+              lente que la production. Risque de perte à l'expiration de la
+              rétention Kafka. README §18 « Consumer lag increasing ».
+
+        - alert: EdotKafkaNotConsuming
+          expr: |
+            sum(rate(otelcol_kafka_receiver_messages{namespace="edot", outcome="success"}[10m])) == 0
+              and sum(otelcol_kafka_receiver_offset_lag{namespace="edot"}) > 0
+          for: 15m
+          labels:
+            severity: critical
+            category: security
+          annotations:
+            summary: EDOT ne consomme plus Kafka malgré des messages en attente
+            description: >-
+              Aucun message lu depuis 15 min alors que le lag est positif :
+              backpressure (file pleine, Elasticsearch bloqué), mémoire
+              saturée ou partition bloquée. README §19 et §18.
+
+        - alert: EdotKafkaDecodeErrors
+          expr: |
+            sum by (topic, partition) (increase(otelcol_kafka_receiver_unmarshal_failed_log_records{namespace="edot"}[15m])) > 0
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: "EDOT : {{ $value }} message(s) OTLP JSON indécodable(s) sur {{ $labels.topic }}/{{ $labels.partition }}"
+            description: >-
+              Messages ignorés (offset journalisé, message conservé dans Kafka
+              jusqu'à expiration de la rétention). Identifier le producteur et
+              rejouer si nécessaire : README §19.4 et §18 « OTLP JSON decoding error ».
+
+        - alert: EdotKafkaDecodeErrorsRepeated
+          expr: |
+            sum(increase(otelcol_kafka_receiver_unmarshal_failed_log_records{namespace="edot"}[15m])) > 100
+          labels:
+            severity: critical
+            category: security
+          annotations:
+            summary: "EDOT : erreurs de décodage OTLP JSON répétées ({{ $value }} en 15 min)"
+            description: >-
+              Un producteur envoie un format autre qu'OTLP JSON (otlp_proto,
+              JSON libre, message tronqué) : ces logs ne sont PAS indexés.
+
+        - alert: EdotKafkaBrokerConnectionFailures
+          expr: |
+            sum by (node_id) (rate(otelcol_kafka_broker_connects{namespace="edot", outcome="failure"}[5m])) > 0
+          for: 10m
+          labels:
+            severity: warning
+            category: network
+          annotations:
+            summary: "EDOT : échecs de connexion au broker Kafka {{ $labels.node_id }}"
+            description: >-
+              node_id « seed_N » = broker de bootstrap, numérique = broker
+              annoncé (advertised.listeners). DNS, pare-feu, TLS ou SASL :
+              tests/network-diagnostics.sh kafka ; README §18.
+
+    # ── Export Elasticsearch ───────────────────────────────────────────────
+    - name: edot-collector.elasticsearch
+      rules:
+        # Un lot abandonné après échec définitif ou épuisement des retries :
+        # PERTE pour Elasticsearch (rejouable depuis Kafka, README §19.4).
+        - alert: EdotElasticsearchExportDropped
+          expr: |
+            sum(increase(otelcol_exporter_send_failed_log_records{namespace="edot"}[10m])) > 0
+          labels:
+            severity: critical
+            category: security
+          annotations:
+            summary: "EDOT : {{ $value }} log(s) abandonné(s) à l'export Elasticsearch"
+            description: >-
+              Erreur définitive au niveau de la requête bulk (400, 404, 413)
+              ou retries épuisés. Ces logs ne sont pas indexés. Logs du pod
+              (« Exporting failed »), puis rejeu Kafka : README §19.4.
+
+        - alert: EdotElasticsearchDocumentsRejected
+          expr: |
+            sum by (outcome, http_response_status_code) (increase(otelcol_elasticsearch_docs_processed{namespace="edot", outcome!="success"}[15m])) > 0
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: "EDOT : documents refusés par Elasticsearch ({{ $labels.outcome }}, HTTP {{ $labels.http_response_status_code }})"
+            description: >-
+              Refus document par document dans une réponse bulk (mapping,
+              privilège sur un data stream, 429 non résorbé). Redirigés vers
+              le failure store s'il est activé, sinon perdus. README §13 et §18.
+
+        - alert: EdotElasticsearchExportBlocked
+          expr: |
+            sum(otelcol_exporter_queue_size{namespace="edot"}) > 0
+              and sum(rate(otelcol_exporter_sent_log_records{namespace="edot"}[10m])) == 0
+          for: 10m
+          labels:
+            severity: critical
+            category: security
+          annotations:
+            summary: L'export vers Elasticsearch est bloqué
+            description: >-
+              Des logs attendent dans la file mais rien n'est indexé depuis
+              10 min : Elasticsearch indisponible, 429 persistant, API Key
+              révoquée ou expirée (401), privilèges insuffisants (403), TLS.
+              Les requêtes sont retentées, rien n'est perdu tant que la file
+              et la rétention Kafka tiennent. README §18 (403, 429).
+
+        # Les 401/403 et 429/5xx sont retentés par le client HTTP SANS AUCUN
+        # log (constaté sur EDOT 9.5.6 : clé révoquée → aucune ligne warn/error,
+        # aucun compteur d'échec). Seule l'instrumentation HTTP les compte, une
+        # fois par tentative.
+        - alert: EdotElasticsearchAuthRejected
+          expr: |
+            sum by (http_response_status_code, server_address) (rate(http_client_request_duration_count{namespace="edot", http_response_status_code=~"401|403"}[5m])) > 0
+          for: 5m
+          labels:
+            severity: critical
+            category: security
+          annotations:
+            summary: "EDOT : Elasticsearch {{ $labels.server_address }} répond HTTP {{ $labels.http_response_status_code }}"
+            description: >-
+              API Key révoquée, expirée ou mal copiée (401) ; privilège
+              manquant ou refus d'un proxy (403). L'export est arrêté et
+              retenté (aucune perte tant que file et rétention Kafka tiennent).
+              Corriger la clé dans Vault puis redémarrer les pods. README §18.
+
+        - alert: EdotElasticsearchHttpRetries
+          expr: |
+            sum by (http_response_status_code, server_address) (rate(http_client_request_duration_count{namespace="edot", http_response_status_code=~"429|5.."}[5m])) > 0
+          for: 15m
+          labels:
+            severity: warning
+            category: observability
+          annotations:
+            summary: "EDOT : Elasticsearch {{ $labels.server_address }} renvoie HTTP {{ $labels.http_response_status_code }} depuis 15 min"
+            description: >-
+              Saturation (429) ou indisponibilité (5xx) : requêtes retentées
+              avec backoff. README §18 « Elasticsearch 429 ».
+
+        - alert: EdotElasticsearchSlowExport
+          expr: |
+            histogram_quantile(0.95, sum by (le) (rate(otelcol_elasticsearch_bulk_requests_latency_bucket{namespace="edot"}[10m]))) > 10
+          for: 15m
+          labels:
+            severity: warning
+            category: observability
+          annotations:
+            summary: "EDOT : requêtes bulk lentes (p95 {{ $value | humanizeDuration }})"
+            description: >-
+              Le p95 des requêtes bulk dépasse 10 s (seuil À AJUSTER) :
+              Elasticsearch saturé ou réseau dégradé.
+
+    # ── File d'attente persistante ─────────────────────────────────────────
+    - name: edot-collector.queue
+      rules:
+        - alert: EdotExporterQueueFilling
+          expr: |
+            max by (pod) (otelcol_exporter_queue_size{namespace="edot"} / otelcol_exporter_queue_capacity{namespace="edot"}) > 0.5
+          for: 15m
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: "EDOT : file d'export de {{ $labels.pod }} remplie à {{ $value | humanizePercentage }}"
+            description: >-
+              Elasticsearch absorbe moins vite que Kafka ne fournit.
+
+        - alert: EdotExporterQueueFull
+          expr: |
+            max by (pod) (otelcol_exporter_queue_size{namespace="edot"} / otelcol_exporter_queue_capacity{namespace="edot"}) > 0.95
+          for: 5m
+          labels:
+            severity: critical
+            category: security
+          annotations:
+            summary: "EDOT : file d'export de {{ $labels.pod }} pleine"
+            description: >-
+              File pleine : la consommation Kafka est suspendue
+              (block_on_overflow, aucune perte) et le lag augmente.
+              README §18 « Exporter queue full ».
+
+        - alert: EdotExporterEnqueueFailed
+          expr: |
+            sum by (pod) (increase(otelcol_exporter_enqueue_failed_log_records{namespace="edot"}[10m])) > 0
+          labels:
+            severity: critical
+            category: security
+          annotations:
+            summary: "EDOT : écriture impossible dans la file persistante ({{ $labels.pod }})"
+            description: >-
+              Volume plein ou en lecture seule, fichier bbolt corrompu. Les
+              messages restent non validés dans Kafka (retentés). README §18
+              « PVC permission denied ».
+
+        - alert: EdotQueueVolumeFilling
+          expr: |
+            kubelet_volume_stats_available_bytes{namespace="edot", persistentvolumeclaim=~"queue-edot-collector-.*"}
+              / kubelet_volume_stats_capacity_bytes{namespace="edot", persistentvolumeclaim=~"queue-edot-collector-.*"} < 0.2
+          for: 15m
+          labels:
+            severity: warning
+            category: security
+          annotations:
+            summary: "EDOT : volume {{ $labels.persistentvolumeclaim }} rempli à plus de 80 %"
+            description: >-
+              La file est plafonnée à 2 Gio : un volume presque plein signale
+              une fragmentation bbolt ou une compaction qui n'a pas abouti.
+              README §14.
+
+    # ── Ressources ─────────────────────────────────────────────────────────
+    - name: edot-collector.resources
+      rules:
+        - alert: EdotMemoryLimiterRefusing
+          expr: |
+            sum by (pod) (rate(otelcol_receiver_refused_log_records{namespace="edot"}[5m])) > 0
+          for: 10m
+          labels:
+            severity: warning
+            category: observability
+          annotations:
+            summary: "EDOT : {{ $labels.pod }} refuse des logs (mémoire)"
+            description: >-
+              memory_limiter refuse des données depuis 10 min : messages non
+              validés et retentés depuis Kafka (aucune perte), débit réduit.
+              Augmenter limits.memory ou le nombre de réplicas.
+
+        - alert: EdotMemoryNearLimit
+          expr: |
+            max by (pod) (container_memory_working_set_bytes{namespace="edot", container="opentelemetry-collector"})
+              / max by (pod) (kube_pod_container_resource_limits{namespace="edot", container="opentelemetry-collector", resource="memory"}) > 0.9
+          for: 15m
+          labels:
+            severity: warning
+            category: observability
+          annotations:
+            summary: "EDOT : {{ $labels.pod }} à {{ $value | humanizePercentage }} de sa limite mémoire"
+            description: >-
+              Risque d'OOMKill. La file persistante survit à un OOMKill (aucune
+              perte), mais la consommation s'interrompt à chaque redémarrage.

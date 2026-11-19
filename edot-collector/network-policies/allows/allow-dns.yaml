@@ -1,0 +1,51 @@
+# Résolution DNS des noms EXTERNES de Kafka et d'Elasticsearch, pour tous les
+# pods du namespace.
+#
+# Portable : deux pairs, un seul existe selon la plateforme.
+#   * OpenShift : pods dns-default du namespace openshift-dns, qui écoutent
+#     sur 5353 (le Service dns-default expose 53 → 5353 ; une NetworkPolicy
+#     s'applique au port du POD) ;
+#   * Kubernetes standard : CoreDNS (k8s-app=kube-dns) dans kube-system, :53
+#     (même pair que infra/network-policies/common/allow-dns).
+# `matchExpressions` plutôt que `matchLabels` : convention du dépôt.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  labels:
+    network-policy-phase: allow
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-dns
+          podSelector:
+            matchExpressions:
+              - key: dns.operator.openshift.io/daemonset-dns
+                operator: In
+                values:
+                  - default
+      ports:
+        - protocol: UDP
+          port: 5353
+        - protocol: TCP
+          port: 5353
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchExpressions:
+              - key: k8s-app
+                operator: In
+                values:
+                  - kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

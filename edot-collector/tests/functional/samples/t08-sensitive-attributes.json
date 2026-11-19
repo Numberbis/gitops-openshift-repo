@@ -1,0 +1,152 @@
+{
+  "description": "Champs sensibles dans les attributs de ressource, de scope et de log : log conservé, champs supprimés",
+  "expect": {
+    "indexed": true,
+    "absent": [
+      "attributes.user.email",
+      "attributes.client.ip",
+      "attributes.http.request.header.authorization",
+      "attributes.HTTP.REQUEST.HEADER.COOKIE",
+      "resource.attributes.host.mac",
+      "scope.attributes.debug.payload"
+    ],
+    "present": {
+      "resource.attributes.service.name": "application-test",
+      "attributes.message": "Connexion utilisateur",
+      "attributes.http.request.method": "POST",
+      "attributes.user.id": "u-1234",
+      "resource.attributes.host.name": "app-node-1",
+      "scope.attributes.instrumentation.kind": "manual",
+      "body.text": "Connexion utilisateur"
+    }
+  },
+  "message": {
+    "resourceLogs": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "application-test"
+              }
+            },
+            {
+              "key": "deployment.environment.name",
+              "value": {
+                "stringValue": "functional-test"
+              }
+            },
+            {
+              "key": "host.mac",
+              "value": {
+                "stringValue": "00:00:5E:00:53:01"
+              }
+            },
+            {
+              "key": "host.name",
+              "value": {
+                "stringValue": "app-node-1"
+              }
+            }
+          ]
+        },
+        "scopeLogs": [
+          {
+            "scope": {
+              "name": "edot.functional.test",
+              "version": "1.0.0",
+              "attributes": [
+                {
+                  "key": "debug.payload",
+                  "value": {
+                    "stringValue": "{\"raw\":\"dump\"}"
+                  }
+                },
+                {
+                  "key": "instrumentation.kind",
+                  "value": {
+                    "stringValue": "manual"
+                  }
+                }
+              ]
+            },
+            "logRecords": [
+              {
+                "timeUnixNano": "1763560800000000000",
+                "observedTimeUnixNano": "1763560800000000000",
+                "severityNumber": 9,
+                "severityText": "INFO",
+                "body": {
+                  "stringValue": "Connexion utilisateur"
+                },
+                "attributes": [
+                  {
+                    "key": "test.case",
+                    "value": {
+                      "stringValue": "t08"
+                    }
+                  },
+                  {
+                    "key": "user.email",
+                    "value": {
+                      "stringValue": "test@example.com"
+                    }
+                  },
+                  {
+                    "key": "client.ip",
+                    "value": {
+                      "stringValue": "192.0.2.10"
+                    }
+                  },
+                  {
+                    "key": "message",
+                    "value": {
+                      "stringValue": "Connexion utilisateur"
+                    }
+                  },
+                  {
+                    "key": "http.request.method",
+                    "value": {
+                      "stringValue": "POST"
+                    }
+                  },
+                  {
+                    "key": "http.request.header.authorization",
+                    "value": {
+                      "arrayValue": {
+                        "values": [
+                          {
+                            "stringValue": "Bearer eyJhbGciOiJub25lIn0.test"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "key": "HTTP.REQUEST.HEADER.COOKIE",
+                    "value": {
+                      "arrayValue": {
+                        "values": [
+                          {
+                            "stringValue": "sid=abc"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "key": "user.id",
+                    "value": {
+                      "stringValue": "u-1234"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

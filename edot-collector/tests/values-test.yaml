@@ -1,0 +1,37 @@
+# =============================================================================
+# Valeurs de TEST — NE JAMAIS utiliser pour un déploiement
+# =============================================================================
+# Remplacent les TODO_* par des valeurs FICTIVES pointant vers le banc de test
+# local et jetable de tests/functional/ (Kafka et Elasticsearch dans un réseau
+# Docker isolé, noms « kafka-test » et « elasticsearch-test »). Utilisées par :
+#   * tests/validate-config.sh  : validation de la configuration rendue ;
+#   * tests/functional/run-tests.sh : tests de bout en bout.
+#
+# Ce fichier n'est référencé par AUCUNE Application Argo CD (contrôlé par
+# tests/validate-config.sh). Les fichiers values-*.yaml destinés au
+# déploiement conservent leurs TODO.
+
+config:
+  receivers:
+    kafka:
+      brokers:
+        - kafka-test:9093
+      group_id: edot-functional-test
+      logs:
+        topics:
+          - otlp-logs-test
+      auth:
+        sasl:
+          mechanism: SCRAM-SHA-512
+  exporters:
+    elasticsearch:
+      endpoints:
+        - https://elasticsearch-test:9200
+  processors:
+    transform/routing:
+      error_mode: ignore
+      log_statements:
+        - context: resource
+          statements:
+            - set(attributes["data_stream.dataset"], "edottest") where attributes["data_stream.dataset"] == nil
+            - set(attributes["data_stream.namespace"], "functional") where attributes["data_stream.namespace"] == nil
