@@ -24,7 +24,7 @@ au §4. Commandes de reproduction : [README §20](README.md#20-validations-et-te
 | `helm lint` (5 fichiers de values) | ✅ |
 | `helm template` comme Argo CD (profil OpenShift, profil Kubernetes, valeurs de test) | ✅ StatefulSet, ConfigMap, Service, ServiceAccount, ServiceMonitor, PDB |
 | 47 contrôles des manifests et de la configuration rendus (`validate-config.sh`) : sécurité OpenShift, PVC, Secrets référencés, ordre du pipeline, TLS, file persistante, exposition… | ✅ |
-| `elastic-agent otel validate` — configuration de **déploiement** (TODO) | ✅ **refusée** (mécanisme SASL, ports et URL invalides) |
+| `elastic-agent otel validate` — configuration de **déploiement** (TODO) | ✅ **refusée** (URL et ports Elasticsearch invalides) — revalidé le 2026-11-19 après passage en mTLS |
 | `elastic-agent otel validate` — configuration + valeurs de test | ✅ acceptée |
 | Self-test : OTTL invalide (fonction, syntaxe, chemin), option inconnue, type invalide | ✅ rejetés |
 | `kubectl kustomize` du répertoire compagnon (11 objets) ; chaque Secret consommé est produit par un ExternalSecret | ✅ |
@@ -45,7 +45,7 @@ au §4. Commandes de reproduction : [README §20](README.md#20-validations-et-te
 
 ## 4. Tests fonctionnels et de résilience (banc Docker local)
 
-Banc `tests/functional/run-tests.py all` : Kafka SASL_SSL/SCRAM-SHA-512 avec ACL
+Banc `tests/functional/run-tests.py all` : Kafka SSL à **certificat client obligatoire** (mTLS) avec ACL sur le DN
 minimales, Elasticsearch HTTPS avec API Key minimale, **2 réplicas EDOT dans les
 conditions d'OpenShift** (UID 1000680000, GID 0, fsGroup simulé, rootfs en
 lecture seule, aucune capability, file persistante sur volume), configuration
@@ -74,7 +74,7 @@ vérifications réussies** à la seconde exécution.
 | R5 | perte d'un réplica (rebalance) | ✅ 4 000/4 000 ; reprise en 10 s puis 53 s (≤ session_timeout + traitement) |
 | R6 | API Key révoquée (401) puis rotation | ✅ 401 retentés (14 tentatives comptées par `http_client_request_duration_count`), **aucun log émis par EDOT** (constat), 0 lot abandonné, 2 000/2 000 après rotation |
 | R7 | file saturée (réduite à 2 Mo), 30 000 logs | ✅ consommation Kafka suspendue (lag > 0), 0 refus, 30 000/30 000 après reprise |
-| S1 | identifiants dans les logs EDOT | ✅ aucun mot de passe ni API Key |
+| S1 | identifiants dans les logs EDOT | ✅ aucun mot de passe, API Key ni clé privée |
 
 Constats issus des tests et intégrés à la solution :
 
@@ -89,12 +89,56 @@ Constats issus des tests et intégrés à la solution :
 - option `resolve_canonical_bootstrap_servers_only` documentée mais refusée par
   cette version → retirée.
 
+## 4 bis. Passage au mTLS (branche `feature/edot-kafka-mtls`, 2026-11-19)
+
+Le cluster Kafka cible authentifie ses clients **par certificat** (ACL sur le
+CN). Configuration passée de SASL_SSL à `security.protocol=SSL` + certificat
+client ; banc fonctionnel reconstruit à l'identique (listener SSL,
+`ssl.client.auth=required`, truststore = racine seule, principal = DN complet,
+ACL sur ce DN). Exécuté sur ce poste (Docker 29.1.2, helm 3.16.3) :
+
+| Validation | Résultat |
+|---|---|
+| `tests/validate-config.sh --self-test` (dont nouveaux contrôles : clés `tls.crt`/`tls.key`, aucun bloc `auth`, volume `0440` lecture seule) | ✅ |
+| `tests/preflight.sh` (chemins de ce dépôt) | ✅ liste les 14 TODO restants |
+| `kubectl kustomize apps` et `edot-collector` | ✅ |
+| Banc `all` (1ʳᵉ exécution) | 42/44 : les 2 échecs étaient des **assertions de test** erronées (voir constats) ; filtrage t01–t13, résilience R1–R7 et S1 tous ✅ |
+| Banc `filtering` après correction des assertions | ✅ **29/29** |
+
+Scénarios mTLS ajoutés (exécutés à chaque lancement du banc) :
+
+| Scénario | Résultat |
+|---|---|
+| certificat EDOT signé par une CA **intermédiaire** (brokers : racine seule), chaîne présentée par `tls.crt` | ✅ accepté |
+| `kafka-broker-api-versions` / `kafka-get-offsets` / `kafka-consumer-groups --describe` avec le certificat d'EDOT (commandes du tutoriel et de `network-diagnostics.sh`) | ✅ broker annoncé, 4/4 partitions, consommateurs EDOT visibles |
+| `openssl s_client` mTLS depuis le conteneur EDOT | ✅ `Verify return code: 0` |
+| `otelcol_kafka_broker_connects` | ✅ success=4, failure=0 |
+| client **sans** certificat | ✅ refusé |
+| certificat au **même DN** signé par une CA inconnue | ✅ refusé (le DN seul ne suffit pas) |
+| certificat valide d'un CN **sans ACL** | ✅ topic invisible |
+| écriture avec le certificat d'EDOT | ✅ refusée (aucune ACL `Write`) |
+
+Constats intégrés au tutoriel (§A10.6, §A11, §C2) :
+
+- en TLS 1.3, le refus du certificat client apparaît côté outils Kafka comme
+  `failed authentication due to: Failed to process post-handshake messages` ;
+- sans ACL `Describe`, Kafka **masque** le topic : `Could not match any
+  topic-partitions with the specified filters`, pas `TopicAuthorizationException` ;
+- le producteur console est idempotent par défaut : sans ACL `Write`, le refus
+  arrive d'abord en `ClusterAuthorizationException` ; avec `Write` + `Describe`
+  sur le topic, l'idempotence fonctionne sans droit `IdempotentWrite` explicite.
+
+Limites : clé du banc en `0644` (montage de fichiers Docker ; le `0440` + fsGroup
+d'OpenShift est contrôlé statiquement, pas exécuté) ; `network-diagnostics.sh`
+n'a pas pu être exécuté contre un cluster (aucun accès), ses commandes Kafka
+mTLS l'ont été sur le banc.
+
 ## 5. Non exécuté (et pourquoi)
 
 | Test | Raison | Comment le faire |
 |---|---|---|
 | Déploiement sur OpenShift (SCC réelle, StorageClass, supervision UWM, OpenShift GitOps) | aucun cluster accessible depuis le poste | README §16 (sync partielle, `preflight.sh --live`) |
-| Connectivité vers le Kafka et l'Elasticsearch réels (DNS, pare-feu, EgressIP, advertised.listeners, certificats réels) | adresses non renseignées (TODO), aucun accès | `tests/network-diagnostics.sh` ; ses commandes ont été exécutées avec succès sur le banc (DNS, TCP, TLS dont rejet d'un nom non conforme, SASL dont rejet d'un mauvais mot de passe, advertised.listeners, offsets du topic avec ACL minimales, privilèges de l'API Key dont refus hors périmètre) ; le script complet (`oc exec`) n'a pas pu être exécuté |
+| Connectivité vers le Kafka et l'Elasticsearch réels (DNS, pare-feu, EgressIP, advertised.listeners, certificats réels) | adresses non renseignées (TODO), aucun accès | `tests/network-diagnostics.sh` ; ses commandes ont été exécutées avec succès sur le banc (DNS, TCP, TLS dont rejet d'un nom non conforme, mTLS dont rejets sans certificat / CA inconnue / CN sans ACL, advertised.listeners, offsets du topic avec ACL minimales, privilèges de l'API Key dont refus hors périmètre) ; le script complet (`oc exec`) n'a pas pu être exécuté |
 | Comportement sur un 403 de requête et sur une erreur TLS en cours d'exploitation | non simulé | déduit du code de l'exporter (README §19.3) |
 | Perte d'un worker OpenShift réel, PVC répliqué, drain | pas de cluster | simulé par arrêt / crash de conteneur (R3 à R5) |
 | Débit et dimensionnement réels | banc mono-hôte non représentatif | mesurer en recette (README §11, §14) |

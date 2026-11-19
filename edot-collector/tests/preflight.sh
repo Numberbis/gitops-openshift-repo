@@ -14,7 +14,7 @@
 set -uo pipefail
 
 ROOT="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
-D="$ROOT/infra/edot-collector"
+D="$ROOT/edot-collector"
 LIVE=false
 [[ "${1:-}" == "--live" ]] && LIVE=true
 
@@ -28,7 +28,7 @@ files=(
   "$D"/values.yaml "$D"/values-openshift.yaml "$D"/values-kubernetes.yaml
   "$D"/values-kafka.yaml "$D"/values-elasticsearch.yaml "$D"/values-processing.yaml
   "$D"/network-policies/allows/*.yaml "$D"/prometheusrule.yaml
-  "$ROOT"/argocd/applications/infra/edot-collector.yaml
+  "$ROOT"/apps/40-edot-collector-app.yaml
 )
 
 bold "==> Paramètres TODO restants (fichiers déployés)"
@@ -38,7 +38,7 @@ if [[ -n "$hits" ]]; then
   count="$(wc -l <<<"$hits")"
   red "    ✗ $count ligne(s) à renseigner :"
   sed 's/^/      /' <<<"$hits"
-  echo "    Signification de chaque paramètre : infra/edot-collector/TODO.md"
+  echo "    Signification de chaque paramètre : edot-collector/TODO.md"
   rc=1
 else
   green "    ✓ aucun TODO dans les fichiers déployés"
@@ -73,11 +73,11 @@ if $LIVE; then
   done
   if "$CLI" api-resources -o name 2>/dev/null | grep -q '^securitycontextconstraints'; then
     ok "OpenShift détecté : profil values-openshift.yaml attendu dans l'Application"
-    grep -q 'values-openshift.yaml' "$ROOT/argocd/applications/infra/edot-collector.yaml" \
+    grep -q 'values-openshift.yaml' "$ROOT/apps/40-edot-collector-app.yaml" \
       || ko "l'Application n'utilise pas values-openshift.yaml"
   else
     ok "Kubernetes standard détecté : profil values-kubernetes.yaml attendu dans l'Application"
-    grep -q 'values-kubernetes.yaml' "$ROOT/argocd/applications/infra/edot-collector.yaml" \
+    grep -q 'values-kubernetes.yaml' "$ROOT/apps/40-edot-collector-app.yaml" \
       || ko "l'Application utilise le profil OpenShift sur un cluster sans SCC (runAsNonRoot refusé)"
   fi
 fi

@@ -61,20 +61,23 @@ services:
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       # INTERNAL : administration depuis le conteneur uniquement (super user
       # ANONYMOUS). EXTERNAL : seul listener utilisé par EDOT et le
-      # producteur, SASL_SSL + SCRAM-SHA-512, annoncé sous « kafka-test:9093 »
-      # (vérifie aussi le passage bootstrap → advertised.listeners).
+      # producteur, SSL avec certificat client OBLIGATOIRE (mTLS, comme le
+      # cluster cible), annoncé sous « kafka-test:9093 » (vérifie aussi le
+      # passage bootstrap → advertised.listeners). Principal = DN complet du
+      # certificat client (ssl.principal.mapping.rules par défaut).
       KAFKA_LISTENERS: CONTROLLER://localhost:9094,INTERNAL://localhost:19092,EXTERNAL://0.0.0.0:9093
       KAFKA_ADVERTISED_LISTENERS: INTERNAL://localhost:19092,EXTERNAL://kafka-test:9093
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:SASL_SSL
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:SSL
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
-      KAFKA_SASL_ENABLED_MECHANISMS: SCRAM-SHA-512
-      KAFKA_LISTENER_NAME_EXTERNAL_SCRAM___SHA___512_SASL_JAAS_CONFIG: org.apache.kafka.common.security.scram.ScramLoginModule required;
+      KAFKA_SSL_CLIENT_AUTH: required
+      KAFKA_SSL_TRUSTSTORE_TYPE: PEM
+      KAFKA_SSL_TRUSTSTORE_LOCATION: /work/ca.crt
       KAFKA_SSL_KEYSTORE_TYPE: PKCS12
       KAFKA_SSL_KEYSTORE_LOCATION: /work/kafka.p12
       KAFKA_SSL_KEYSTORE_PASSWORD: ${KAFKA_KEYSTORE_PASSWORD}
       KAFKA_SSL_KEY_PASSWORD: ${KAFKA_KEYSTORE_PASSWORD}
-      # ACL : EDOT n'a que Read/Describe sur le topic et Read sur son groupe
-      # (privilèges minimaux documentés dans README §9).
+      # ACL sur le DN du certificat : EDOT n'a que Read/Describe sur le topic
+      # et Read sur son groupe (privilèges minimaux, README §9).
       KAFKA_AUTHORIZER_CLASS_NAME: org.apache.kafka.metadata.authorizer.StandardAuthorizer
       KAFKA_SUPER_USERS: User:ANONYMOUS
       KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
@@ -128,6 +131,9 @@ services:
     volumes:
       - ${EDOT_TEST_WORK}/relay.yaml:/conf/relay.yaml:ro
       - ${EDOT_TEST_WORK}/ca.crt:/etc/edot/kafka/ca.crt:ro
+      # Certificat client mTLS (Secret edot-kafka-credentials en production).
+      - ${EDOT_TEST_WORK}/edot-client-chain.crt:/etc/edot/kafka/tls.crt:ro
+      - ${EDOT_TEST_WORK}/edot-client.key:/etc/edot/kafka/tls.key:ro
       - ${EDOT_TEST_WORK}/ca.crt:/etc/edot/elasticsearch/ca.crt:ro
       - queue-edot-collector-0:/var/lib/edot
 
@@ -140,5 +146,8 @@ services:
     volumes:
       - ${EDOT_TEST_WORK}/relay.yaml:/conf/relay.yaml:ro
       - ${EDOT_TEST_WORK}/ca.crt:/etc/edot/kafka/ca.crt:ro
+      # Certificat client mTLS (Secret edot-kafka-credentials en production).
+      - ${EDOT_TEST_WORK}/edot-client-chain.crt:/etc/edot/kafka/tls.crt:ro
+      - ${EDOT_TEST_WORK}/edot-client.key:/etc/edot/kafka/tls.key:ro
       - ${EDOT_TEST_WORK}/ca.crt:/etc/edot/elasticsearch/ca.crt:ro
       - queue-edot-collector-1:/var/lib/edot

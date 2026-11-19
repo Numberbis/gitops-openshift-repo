@@ -155,7 +155,7 @@ spec:
             summary: "EDOT : échecs de connexion au broker Kafka {{ $labels.node_id }}"
             description: >-
               node_id « seed_N » = broker de bootstrap, numérique = broker
-              annoncé (advertised.listeners). DNS, pare-feu, TLS ou SASL :
+              annoncé (advertised.listeners). DNS, pare-feu, TLS ou certificat client (mTLS) :
               tests/network-diagnostics.sh kafka ; README §18.
 
     # ── Export Elasticsearch ───────────────────────────────────────────────

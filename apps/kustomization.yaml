@@ -31,3 +31,7 @@ resources:
   - 30-streaming-platform-app.yaml
   - 31-spark-operator-app.yaml
   - 32-flink-operator-app.yaml
+  # EDOT Collector (Kafka mTLS -> Elasticsearch) — wave 40. NON enregistrée
+  # tant que edot-collector/TODO.md n'est pas traité : décommenter pour
+  # l'enregistrer (l'Application elle-même reste en synchronisation MANUELLE).
+  # - 40-edot-collector-app.yaml

@@ -32,28 +32,33 @@ config:
       # Identifiant client, visible côté brokers (logs, quotas) : un par pod.
       client_id: edot-${env:OTEL_K8S_POD_NAME}
 
-      # ── Sécurité : KAFKA_SECURITY_PROTOCOL = SASL_SSL ──────────────────
-      # La présence du bloc `tls` active TLS ; le bloc `auth.sasl` active
-      # SASL. Correspondance avec security.protocol : README §9. PLAINTEXT
-      # et SASL_PLAINTEXT sont exclus (pas de TLS désactivé).
+      # ── Sécurité : KAFKA_SECURITY_PROTOCOL = SSL (TLS mutuel, mTLS) ─────
+      # Le cluster Kafka authentifie EDOT par son CERTIFICAT CLIENT : le
+      # principal Kafka est dérivé du DN du certificat (par défaut
+      # « User:CN=…,OU=…,O=…,C=… », ou réduit au CN selon
+      # ssl.principal.mapping.rules des brokers) et les ACL portent sur ce
+      # principal. La présence du bloc `tls` active TLS ; cert_file/key_file
+      # font présenter le certificat client. AUCUN bloc `auth` : pas de SASL.
+      # PLAINTEXT, SASL_PLAINTEXT et SASL_SSL sont exclus (contrôlé par
+      # tests/validate-config.sh). Procédure complète (certificat, ACL,
+      # Vault, vérifications) : docs/tutoriel-connexions-kafka-elasticsearch.md.
       tls:
-        # Autorité de certification des brokers (clé ca.crt du Secret
-        # edot-kafka-credentials, alimenté depuis Vault).
+        # Autorité de certification des BROKERS (vérification du certificat
+        # serveur) — clé ca.crt du Secret edot-kafka-credentials (Vault).
         ca_file: /etc/edot/kafka/ca.crt
+        # Certificat client (+ intermédiaires) et clé privée PEM PKCS#8 NON
+        # chiffrée — clés tls.crt / tls.key du même Secret. Usage du
+        # certificat : clientAuth ; signé par une CA du truststore des brokers.
+        cert_file: /etc/edot/kafka/tls.crt
+        key_file: /etc/edot/kafka/tls.key
         # Vérification du certificat et du nom d'hôte : TOUJOURS active.
         insecure: false
         insecure_skip_verify: false
         min_version: "1.2"
-        # Relecture périodique de la CA (rotation sans redémarrage).
+        # Relecture périodique de la CA, du certificat et de la clé
+        # (rotation sans redémarrage ; une connexion déjà établie garde
+        # l'ancien certificat jusqu'à sa reconnexion).
         reload_interval: 1h
-        # mTLS (security.protocol=SSL avec certificat client) : README §9.
-      auth:
-        sasl:
-          # Variables d'environnement issues du Secret edot-kafka-credentials.
-          username: ${env:KAFKA_USERNAME}
-          password: ${env:KAFKA_PASSWORD}
-          # SCRAM-SHA-512, SCRAM-SHA-256 ou PLAIN (PLAIN uniquement sous TLS).
-          mechanism: TODO_KAFKA_SASL_MECHANISM
 
       # ── Consumer group ─────────────────────────────────────────────────
       # Groupe DÉDIÉ à EDOT, partagé par tous les réplicas. Ne JAMAIS

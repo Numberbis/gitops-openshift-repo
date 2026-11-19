@@ -5,7 +5,7 @@
 #
 #   1. image : le tag épinglé pointe toujours vers le digest vérifié ;
 #   2. helm lint + helm template du chart, exactement comme Argo CD (chart,
-#      version et valueFiles lus dans argocd/applications/infra/edot-collector.yaml) ;
+#      version et valueFiles lus dans apps/40-edot-collector-app.yaml) ;
 #   3. contrôles des manifests rendus : StatefulSet, PVC, Secrets référencés,
 #      ServiceMonitor, sécurité OpenShift (pas d'UID fixe, pas de privilège,
 #      pas de hostPath / hostNetwork, aucun RBAC, aucun jeton d'API), aucune
@@ -26,15 +26,15 @@
 # l'objet de tests/functional/ (banc local) et de tests/network-diagnostics.sh.
 #
 # Usage :
-#   infra/edot-collector/tests/validate-config.sh              # validation
-#   infra/edot-collector/tests/validate-config.sh --self-test  # + vérifie que
+#   edot-collector/tests/validate-config.sh              # validation
+#   edot-collector/tests/validate-config.sh --self-test  # + vérifie que
 #                                       des configurations cassées sont rejetées
 #
 # Prérequis : helm, kubectl (kustomize), docker, python3 (+ PyYAML).
 
 set -euo pipefail
 
-# Doivent correspondre à image.tag de infra/edot-collector/values.yaml.
+# Doivent correspondre à image.tag de edot-collector/values.yaml.
 EDOT_IMAGE="docker.elastic.co/elastic-agent/elastic-otel-collector"
 EDOT_VERSION="9.5.6"
 EDOT_DIGEST="sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1"
@@ -45,7 +45,7 @@ SELF_TEST=false
 [[ "${1:-}" == "--self-test" ]] && SELF_TEST=true
 
 ROOT="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
-EDOT_DIR="$ROOT/infra/edot-collector"
+EDOT_DIR="$ROOT/edot-collector"
 WORK="$(mktemp -d)"
 chmod 755 "$WORK"
 trap 'rm -rf "$WORK"' EXIT
@@ -83,7 +83,7 @@ bold "==> helm lint et helm template (comme Argo CD)"
 python3 - "$ROOT" "$WORK" "$HELM" <<'EOF'
 import subprocess, sys, yaml
 root, work, helm = sys.argv[1:4]
-spec = yaml.safe_load(open(f"{root}/argocd/applications/infra/edot-collector.yaml"))["spec"]
+spec = yaml.safe_load(open(f"{root}/apps/40-edot-collector-app.yaml"))["spec"]
 src = next(s for s in spec["sources"] if "chart" in s)
 values = [v.replace("$values/", root + "/") for v in src["helm"]["valueFiles"]]
 open(f"{work}/values-files", "w").write("\n".join(values))
@@ -98,7 +98,7 @@ if lint.returncode:
     sys.exit(f"    ÉCHEC de helm lint :\n{lint.stdout}{lint.stderr}")
 base = [helm, "template", src["helm"]["releaseName"], chart, "--namespace", spec["destination"]["namespace"],
         "--kube-version", "1.35.8", "--api-versions", "monitoring.coreos.com/v1"]
-for name, extra in (("deploy", []), ("test", ["-f", f"{root}/infra/edot-collector/tests/values-test.yaml"]),
+for name, extra in (("deploy", []), ("test", ["-f", f"{root}/edot-collector/tests/values-test.yaml"]),
                     ("kubernetes", [x for v in values for x in ("-f", v.replace("values-openshift.yaml", "values-kubernetes.yaml"))])):
     cmd = base + (extra if name == "kubernetes" else args + extra)
     proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -167,7 +167,7 @@ env = {e["name"]: e for e in c.get("env", [])}
 refs = {(e["valueFrom"]["secretKeyRef"]["name"], e["valueFrom"]["secretKeyRef"]["key"]) for e in env.values()
         if "secretKeyRef" in e.get("valueFrom", {})}
 refs |= {(v["secret"]["secretName"], i["key"]) for v in pod["volumes"] if "secret" in v for i in v["secret"].get("items", [])}
-check(refs == {("edot-kafka-credentials", "username"), ("edot-kafka-credentials", "password"), ("edot-kafka-credentials", "ca.crt"),
+check(refs == {("edot-kafka-credentials", "ca.crt"), ("edot-kafka-credentials", "tls.crt"), ("edot-kafka-credentials", "tls.key"),
                ("edot-elasticsearch-credentials", "api-key"), ("edot-elasticsearch-credentials", "ca.crt")},
       f"Secrets référencés : {len(refs)} clés (edot-kafka-credentials, edot-elasticsearch-credentials)", f"références de Secrets : {sorted(refs)}")
 open(f"{work}/secret-refs", "w").write("\n".join(f"{n} {k}" for n, k in sorted(refs)))
@@ -197,8 +197,18 @@ for name, tls in (("Kafka", k.get("tls", {})), ("Elasticsearch", es.get("tls", {
 check(all(u.startswith("https://") for u in es["endpoints"]), "Elasticsearch en HTTPS", "endpoint non HTTPS")
 check(not any(re.search(r"svc(\.cluster\.local)?(:|$)", u) for u in es["endpoints"] + k["brokers"]),
       "aucune adresse de Service Kubernetes pour Kafka/Elasticsearch", "adresse de Service Kubernetes utilisée")
-check(es["api_key"] == "${env:ELASTICSEARCH_API_KEY}" and k["auth"]["sasl"]["password"] == "${env:KAFKA_PASSWORD}",
-      "identifiants injectés par variables (aucune valeur en clair)", "identifiant en clair dans la configuration")
+check(es["api_key"] == "${env:ELASTICSEARCH_API_KEY}",
+      "API Key Elasticsearch injectée par variable (aucune valeur en clair)", "identifiant en clair dans la configuration")
+# Kafka : TLS mutuel (security.protocol=SSL). Certificat client et clé lus
+# depuis le volume du Secret ; aucun SASL (ni mot de passe, ni mécanisme).
+kt = k.get("tls", {})
+check("auth" not in k and kt.get("cert_file") == "/etc/edot/kafka/tls.crt" and kt.get("key_file") == "/etc/edot/kafka/tls.key",
+      "Kafka en mTLS : certificat client /etc/edot/kafka/tls.{crt,key}, aucun SASL", f"Kafka : mTLS attendu, auth={k.get('auth')} tls={kt}")
+kvol = next((v for v in pod["volumes"] if v.get("secret", {}).get("secretName") == "edot-kafka-credentials"), {})
+check(kvol.get("secret", {}).get("defaultMode") == 0o440 and
+      any(m["name"] == kvol.get("name") and m["mountPath"] == "/etc/edot/kafka" and m.get("readOnly") for m in c["volumeMounts"]),
+      "clé privée Kafka montée en lecture seule, mode 0440 (lisible via le fsGroup de la SCC)",
+      f"volume du certificat client Kafka inattendu : {kvol}")
 q = es["sending_queue"]
 check(q.get("storage") == "file_storage/queue" and "file_storage/queue" in cfg["service"]["extensions"] and q.get("block_on_overflow") is True,
       "file persistante file_storage/queue, block_on_overflow", f"sending_queue {q}")
@@ -216,10 +226,10 @@ check(kpsc.get("runAsUser") == 10001 and kpsc.get("fsGroup") == 10001, "profil K
 
 # Les valeurs de test ne sont référencées par aucune Application.
 import glob
-apps = "".join(open(f).read() for f in glob.glob(f"{root}/argocd/applications/**/*.yaml", recursive=True))
+apps = "".join(open(f).read() for f in glob.glob(f"{root}/apps/**/*.yaml", recursive=True))
 check("values-test" not in apps, "tests/values-test.yaml référencé par aucune Application", "values-test.yaml référencé par une Application")
 # Aucune synchronisation automatique.
-app = yaml.safe_load(open(f"{root}/argocd/applications/infra/edot-collector.yaml"))
+app = yaml.safe_load(open(f"{root}/apps/40-edot-collector-app.yaml"))
 check("automated" not in app["spec"].get("syncPolicy", {}), "Application en synchronisation MANUELLE", "syncPolicy.automated présent")
 
 for m in ok:
@@ -231,7 +241,7 @@ EOF
 
 # ------------------------------------------------ 5. validation EDOT
 otel_env=(-e MY_POD_IP=127.0.0.1 -e OTEL_K8S_POD_NAME=edot-collector-0 -e OTEL_K8S_NAMESPACE=edot
-          -e KAFKA_USERNAME=ci -e KAFKA_PASSWORD=ci -e ELASTICSEARCH_API_KEY=ci)
+          -e ELASTICSEARCH_API_KEY=ci)
 validate_edot() {
   docker run --rm --network none -v "$1:/conf/relay.yaml:ro" "${otel_env[@]}" \
     "$EDOT_IMAGE@$EDOT_DIGEST" validate --config=file:/conf/relay.yaml
@@ -250,7 +260,7 @@ validate_edot "$WORK/relay-test.yaml"
 green "    ✓ configuration + valeurs de test : VALIDE (composants, options, OTTL, extensions)"
 
 # ------------------------------------------------ 6. répertoire compagnon
-bold "==> kubectl kustomize infra/edot-collector"
+bold "==> kubectl kustomize edot-collector"
 kubectl kustomize "$EDOT_DIR" > "$WORK/companion.yaml"
 python3 - "$WORK" <<'EOF'
 import json, sys, yaml
