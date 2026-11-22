@@ -1,0 +1,30 @@
+# Kibana de TEST (environnement edot-integration-test) : interface de
+# consultation de l'Elasticsearch mono-nœud. Les ${VAR} sont lues dans
+# l'environnement du conteneur (Secret elasticsearch-test-credentials).
+server.host: "0.0.0.0"
+server.port: 5601
+server.name: kibana-edot-test
+# server.publicBaseUrl : fixé par l'overlay (SERVER_PUBLICBASEURL), selon
+# l'exposition de la plateforme (Ingress Tailscale sur le profil kubernetes).
+
+# Connexion à Elasticsearch avec l'utilisateur intégré kibana_system (mot de
+# passe défini par l'initContainer du pod), jamais avec le superutilisateur.
+elasticsearch.hosts: ["http://elasticsearch.edot-integration-test.svc.cluster.local:9200"]
+elasticsearch.username: kibana_system
+elasticsearch.password: "${KIBANA_SYSTEM_PASSWORD}"
+
+# Clés de chiffrement (sessions, objets enregistrés chiffrés, rapports) :
+# stables d'un redémarrage à l'autre, sinon les sessions sont invalidées.
+xpack.security.encryptionKey: "${KIBANA_ENCRYPTION_KEY}"
+xpack.encryptedSavedObjects.encryptionKey: "${KIBANA_ENCRYPTION_KEY}"
+xpack.reporting.encryptionKey: "${KIBANA_ENCRYPTION_KEY}"
+
+# Aucun accès Internet (les NetworkPolicies le refusent de toute façon) :
+# télémétrie, actualités, cartes Elastic et registre Fleet désactivés.
+telemetry.optIn: false
+telemetry.allowChangingOptInStatus: false
+newsfeed.enabled: false
+map.includeElasticMapsService: false
+xpack.fleet.isAirGapped: true
+
+logging.root.level: info

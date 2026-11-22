@@ -1,0 +1,38 @@
+# Service CLIENT : http://elasticsearch.edot-integration-test.svc.cluster.local:9200
+# ClusterIP uniquement : aucune Route OpenShift, Ingress, NodePort ni LoadBalancer.
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch
+  labels:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/component: search
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/component: search
+  ports:
+    - name: http
+      port: 9200
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch-headless
+  labels:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/component: search
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/component: search
+  ports:
+    - name: http
+      port: 9200
+      targetPort: http
+      protocol: TCP

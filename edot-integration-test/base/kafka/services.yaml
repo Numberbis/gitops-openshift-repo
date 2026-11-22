@@ -1,0 +1,40 @@
+# Service CLIENT : kafka.edot-integration-test.svc.cluster.local:9092
+# (adresse de bootstrap ET adresse annoncée, cf. server.properties).
+# ClusterIP uniquement : aucun NodePort, LoadBalancer, Route ni Ingress.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  labels:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/component: broker
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/component: broker
+  ports:
+    - name: kafka
+      port: 9092
+      targetPort: kafka
+      protocol: TCP
+---
+# Service headless du StatefulSet (identité réseau stable kafka-0).
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-headless
+  labels:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/component: broker
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/component: broker
+  ports:
+    - name: kafka
+      port: 9092
+      targetPort: kafka
+      protocol: TCP

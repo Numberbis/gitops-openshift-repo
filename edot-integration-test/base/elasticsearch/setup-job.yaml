@@ -1,0 +1,93 @@
+# Rôle, utilisateur EDOT et template « 0 réplica » (script setup.sh).
+# Même cycle de vie que kafka-topic-init (hook PostSync Argo CD, recréé par
+# scripts/deploy.sh). Le Job attend lui-même Elasticsearch.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: elasticsearch-setup
+  labels:
+    app.kubernetes.io/name: elasticsearch-setup
+    app.kubernetes.io/component: setup
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 4
+  activeDeadlineSeconds: 900
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: elasticsearch-setup
+        app.kubernetes.io/component: setup
+        edot-integration-test/elasticsearch-client: "true"
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      # Sur le nœud du pod elasticsearch si possible : l'image Elasticsearch (image de 900 Mo) y est déjà
+      # présente (pas de second téléchargement).
+      affinity:
+        podAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: elasticsearch
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: setup
+          # Image Elasticsearch : curl et bash inclus, déjà présente sur le nœud.
+          image: docker.elastic.co/elasticsearch/elasticsearch:9.5.6@sha256:79b4f1de4c15e6eca824723086a51e5934406d614d410cc11be77748cafac537
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/scripts/setup.sh"]
+          env:
+            - name: ES_URL
+              value: http://elasticsearch.edot-integration-test.svc.cluster.local:9200
+            - name: ELASTIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elasticsearch-test-credentials
+                  key: elastic-password
+            - name: EDOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: elasticsearch-test-credentials
+                  key: edot-username
+            - name: EDOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elasticsearch-test-credentials
+                  key: edot-password
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: scripts
+          configMap:
+            name: elasticsearch-setup-script
+        - name: tmp
+          emptyDir:
+            sizeLimit: 8Mi

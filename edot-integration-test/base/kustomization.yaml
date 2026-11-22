@@ -1,0 +1,27 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Environnement de TEST Kafka → EDOT → Elasticsearch (README.md).
+# Ne pas utiliser directement : passer par un overlay (overlays/kubernetes ou
+# overlays/openshift), qui fixe les paramètres propres à la plateforme.
+#
+# Uniquement des objets du namespace edot-integration-test : AUCUNE ressource
+# cluster-wide (ni CRD, ni ClusterRole, ni Operator, ni SCC). Le namespace
+# lui-même n'est pas ici : créé par scripts/deploy.sh ou Argo CD
+# (CreateNamespace), il ne disparaît pas avec les workloads (PVC conservés).
+namespace: edot-integration-test
+
+labels:
+  # Sur tous les objets ET les pods : identification, supervision, nettoyage
+  # (scripts/cleanup.sh sélectionne sur part-of).
+  - pairs:
+      app.kubernetes.io/part-of: edot-integration-test
+      edot-integration-test/environment: test
+    includeSelectors: false
+    includeTemplates: true
+
+resources:
+  - kafka
+  - elasticsearch
+  - kibana
+  - network-policies

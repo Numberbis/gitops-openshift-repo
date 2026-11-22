@@ -1,0 +1,17 @@
+# Namespace edot-integration-test : TOUT est refusé par défaut, en entrée
+# comme en sortie. Les flux nécessaires sont ouverts un par un (allow-*.yaml),
+# par label : aucun pod non étiqueté ne joint Kafka ni Elasticsearch.
+#
+# Kafka (PLAINTEXT, sans authentification) et Elasticsearch (HTTP, sans TLS)
+# s'appuient sur ce cloisonnement : ne pas supprimer ces NetworkPolicies.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  labels:
+    network-policy-phase: deny
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress

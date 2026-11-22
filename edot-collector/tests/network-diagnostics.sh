@@ -3,7 +3,7 @@
 # Diagnostic réseau OpenShift → Kafka EXTERNE et OpenShift → Elasticsearch
 # EXTERNE, DEPUIS le namespace edot, avec la même identité réseau qu'EDOT.
 #
-#   network-diagnostics.sh kafka           DNS, TCP, TLS, mTLS (certificat client), advertised.listeners, ACL
+#   network-diagnostics.sh kafka           DNS, TCP, TLS, SASL, advertised.listeners, ACL
 #   network-diagnostics.sh elasticsearch   DNS, TCP, TLS (chaîne, nom), HTTPS, API Key, privilèges
 #   network-diagnostics.sh all             les deux (défaut)
 #
@@ -18,11 +18,8 @@
 #     portant le label app.kubernetes.io/instance=edot-collector : ils sont
 #     soumis aux MÊMES NetworkPolicies et à la même EgressIP qu'EDOT, mais ne
 #     sont pas sélectionnés par le Service ;
-#   * monte dans les pods le Secret edot-kafka-credentials (CA des brokers,
-#     certificat client et clé privée, comme EDOT) et injecte l'API Key de
-#     edot-elasticsearch-credentials (secretKeyRef) : la clé privée et l'API
-#     Key ne sont jamais lues par le script ni affichées (seul le SUJET du
-#     certificat client, public, est affiché : c'est le principal des ACL) ;
+#   * injecte les Secrets edot-kafka-credentials / edot-elasticsearch-credentials
+#     dans les pods (secretKeyRef) : identifiants jamais lus par le script, jamais affichés ;
 #   * supprime les deux pods à la fin (même en cas d'erreur).
 #
 # Prérequis : oc ou kubectl connecté au cluster cible, droits create/delete
@@ -30,7 +27,7 @@
 set -euo pipefail
 
 ROOT="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
-D="$ROOT/edot-collector"
+D="$ROOT/infra/edot-collector"
 NS=edot
 WHAT="${1:-all}"
 EDOT_IMAGE="docker.elastic.co/elastic-agent/elastic-otel-collector@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1"
@@ -51,23 +48,21 @@ stmts = " ".join(s for g in e["processors"]["transform/routing"]["log_statements
 import re
 ds = re.search(r'data_stream\.dataset"\], "([^"]+)"', stmts).group(1)
 dn = re.search(r'data_stream\.namespace"\], "([^"]+)"', stmts).group(1)
-if "auth" in k or not k.get("tls", {}).get("cert_file"):
-    sys.exit("values-kafka.yaml : configuration mTLS attendue (tls.cert_file/key_file, aucun bloc auth)")
 vals = {"BROKERS": " ".join(k["brokers"]), "TOPICS": " ".join(k["logs"]["topics"]), "GROUP": k["group_id"],
-        "ES_ENDPOINTS": " ".join(es["endpoints"]),
+        "MECHANISM": k["auth"]["sasl"]["mechanism"], "ES_ENDPOINTS": " ".join(es["endpoints"]),
         "DATA_STREAM": f"logs-{ds}.otel-{dn}"}
 for key, v in vals.items():
     print(f"{key}={shlex.quote(v)}")
 EOF
 )"
-if grep -q TODO_ <<<"$BROKERS $TOPICS $GROUP $ES_ENDPOINTS $DATA_STREAM"; then
+if grep -q TODO_ <<<"$BROKERS $TOPICS $GROUP $MECHANISM $ES_ENDPOINTS $DATA_STREAM"; then
   red "Des paramètres sont encore à TODO (values-kafka.yaml / values-elasticsearch.yaml) :"
   red "  aucun test n'est lancé. Renseigner TODO.md, puis relancer."
   exit 1
 fi
 
 # ------------------------------------------------------- pods éphémères
-# Les Secrets sont lus par les PODS (volumes, secretKeyRef), jamais par ce script.
+# Les Secrets sont lus par les PODS (secretKeyRef), jamais par ce script.
 openshift=false
 "$CLI" api-resources -o name 2>/dev/null | grep -q '^securitycontextconstraints' && openshift=true
 pod_manifest() {  # nom image secret montage
@@ -76,10 +71,11 @@ import json, sys
 name, image, secret, mount, openshift = sys.argv[1:6]
 psc = {"runAsNonRoot": True, "seccompProfile": {"type": "RuntimeDefault"}}
 if openshift != "true":
-    # fsGroup : rend la clé privée (mode 0440) lisible, comme la SCC sur OpenShift.
-    psc.update(runAsUser=1000, runAsGroup=1000, fsGroup=1000)
+    psc.update(runAsUser=1000, runAsGroup=1000)
 env = [{"name": "LOG_DIR", "value": "/tmp"}]
-if secret == "edot-elasticsearch-credentials":
+if secret == "edot-kafka-credentials":
+    env += [{"name": n, "valueFrom": {"secretKeyRef": {"name": secret, "key": k}}} for n, k in (("KAFKA_USERNAME", "username"), ("KAFKA_PASSWORD", "password"))]
+else:
     env += [{"name": "ELASTICSEARCH_API_KEY", "valueFrom": {"secretKeyRef": {"name": secret, "key": "api-key"}}}]
 print(json.dumps({"apiVersion": "v1", "kind": "Pod",
   "metadata": {"name": name, "labels": {"app.kubernetes.io/instance": "edot-collector", "edot.diagnostic": "true"}},
@@ -91,9 +87,7 @@ print(json.dumps({"apiVersion": "v1", "kind": "Pod",
       "volumeMounts": [{"name": "tmp", "mountPath": "/tmp"}, {"name": "kafka", "mountPath": "/etc/edot/kafka", "readOnly": True},
                        {"name": "es", "mountPath": "/etc/edot/elasticsearch", "readOnly": True}]}],
     "volumes": [{"name": "tmp", "emptyDir": {"sizeLimit": "64Mi"}},
-      # Mode 0440 comme EDOT (UID arbitraire, lecture via le fsGroup de la SCC).
-      {"name": "kafka", "secret": {"secretName": "edot-kafka-credentials", "defaultMode": 0o440,
-        "items": [{"key": k, "path": k} for k in ("ca.crt", "tls.crt", "tls.key")]}},
+      {"name": "kafka", "secret": {"secretName": "edot-kafka-credentials", "items": [{"key": "ca.crt", "path": "ca.crt"}]}},
       {"name": "es", "secret": {"secretName": "edot-elasticsearch-credentials", "items": [{"key": "ca.crt", "path": "ca.crt"}]}}]}}))
 EOF
 }
@@ -109,78 +103,55 @@ node="$("$CLI" -n "$NS" get pod edot-netdiag -o jsonpath='{.spec.nodeName} {.sta
 echo "    nœud (IP) : $node — IP de sortie vue par les pare-feu : EgressIP du namespace si définie, sinon IP du nœud (README §7)"
 
 # Contrôles bas niveau d'une adresse host:port depuis le pod EDOT.
-# 4e argument « mtls » : présente aussi le certificat client (brokers Kafka).
-probe() {  # host port cafile [mtls]
+probe() {  # host port cafile
   "$CLI" -n "$NS" exec edot-netdiag -- bash -c '
-    h="$1"; p="$2"; ca="$3"; client=()
-    [ "$4" = mtls ] && client=(-cert /etc/edot/kafka/tls.crt -key /etc/edot/kafka/tls.key)
+    h="$1"; p="$2"; ca="$3"
     if ips="$(getent ahosts "$h" | awk "{print \$1}" | sort -u | tr "\n" " ")" && [ -n "$ips" ]; then
       echo "      ✓ DNS  $h → $ips"; else echo "      ✗ DNS  $h : non résolu"; exit 1; fi
     if timeout 5 bash -c "</dev/tcp/$h/$p" 2>/dev/null; then echo "      ✓ TCP  $h:$p"; else
       echo "      ✗ TCP  $h:$p : refusé ou filtré (pare-feu, NetworkPolicy allow-egress-*, EgressIP)"; exit 1; fi
     out="$(timeout 10 openssl s_client -connect "$h:$p" -servername "$h" -CAfile "$ca" -verify_hostname "$h" \
-            -verify_return_error -showcerts "${client[@]}" </dev/null 2>&1)" || true
-    # Refus du certificat client par le serveur (alerte TLS) : visible ici en
-    # TLS 1.2, parfois seulement à la première requête en TLS 1.3 (le test
-    # décisif est alors kafka-broker-api-versions, plus bas).
-    if alert="$(grep -m1 -iE "alert (unknown ca|bad certificate|certificate required|certificate unknown|unsupported certificate|certificate expired)" <<<"$out")"; then
-      echo "      ✗ mTLS le broker REFUSE le certificat client : $alert"; exit 1
-    fi
+            -verify_return_error -showcerts </dev/null 2>&1)" || true
     if grep -q "Verify return code: 0 (ok)" <<<"$out"; then
       chain="$(grep -c "BEGIN CERTIFICATE" <<<"$out")"
       end="$(openssl x509 -noout -enddate <<<"$out" 2>/dev/null | cut -d= -f2)"
       echo "      ✓ TLS  certificat valide pour $h (chaîne : $chain certificat(s), expire le $end)"
     else
       echo "      ✗ TLS  $(grep -m1 -E "Verify return code|verify error|error" <<<"$out")"; exit 1
-    fi' _ "$1" "$2" "$3" "${4:-}"
+    fi' _ "$1" "$2" "$3"
 }
 
 rc=0
 # ---------------------------------------------------------------- Kafka
 if [[ "$WHAT" == kafka || "$WHAT" == all ]]; then
-  bold "==> Certificat client d'EDOT (sujet = principal Kafka des ACL)"
-  "$CLI" -n "$NS" exec edot-netdiag -- bash -c '
-    c=/etc/edot/kafka/tls.crt; k=/etc/edot/kafka/tls.key
-    subj="$(openssl x509 -in "$c" -noout -subject -nameopt RFC2253 | sed "s/^subject=//")"
-    echo "      sujet  : $subj  (principal par défaut : User:$subj)"
-    echo "      expire : $(openssl x509 -in "$c" -noout -enddate | cut -d= -f2)"
-    openssl x509 -in "$c" -noout -checkend 2592000 >/dev/null || echo "      ✗ expire dans moins de 30 jours"
-    openssl x509 -in "$c" -noout -ext extendedKeyUsage 2>/dev/null | grep -q "TLS Web Client Authentication" \
-      && echo "      ✓ usage TLS Web Client Authentication" || { echo "      ✗ usage clientAuth absent (le broker refusera le certificat)"; exit 1; }
-    [ "$(openssl x509 -in "$c" -noout -pubkey | sha256sum)" = "$(openssl pkey -in "$k" -pubout 2>/dev/null | sha256sum)" ] \
-      && echo "      ✓ clé privée correspondant au certificat" || { echo "      ✗ tls.key ne correspond pas à tls.crt (ou clé illisible / chiffrée)"; exit 1; }
-    head -1 "$k" | grep -q "BEGIN PRIVATE KEY" \
-      && echo "      ✓ clé PEM PKCS#8 non chiffrée" || { echo "      ✗ clé non PKCS#8 ou chiffrée (openssl pkey -in … -out …)"; exit 1; }' || rc=1
-
-  bold "==> OpenShift → Kafka : brokers de bootstrap (TLS mutuel)"
+  bold "==> OpenShift → Kafka : brokers de bootstrap"
   for b in $BROKERS; do
-    echo "    $b"; probe "${b%:*}" "${b##*:}" /etc/edot/kafka/ca.crt mtls || rc=1
+    echo "    $b"; probe "${b%:*}" "${b##*:}" /etc/edot/kafka/ca.crt || rc=1
   done
 
-  bold "==> OpenShift → Kafka : authentification par certificat client (mTLS) et advertised.listeners"
-  # Keystore PEM = clé PKCS#8 + certificat(s), dans le /tmp (emptyDir) du pod :
-  # jamais copié hors du pod, détruit avec lui.
+  bold "==> OpenShift → Kafka : authentification SASL ($MECHANISM) et advertised.listeners"
   out="$("$CLI" -n "$NS" exec edot-kafkadiag -- bash -c '
+    case "$1" in SCRAM-*) mod=org.apache.kafka.common.security.scram.ScramLoginModule ;;
+                 *)       mod=org.apache.kafka.common.security.plain.PlainLoginModule ;; esac
     umask 077
-    cat /etc/edot/kafka/tls.key /etc/edot/kafka/tls.crt > /tmp/keystore.pem
-    { echo "security.protocol=SSL"
+    { echo "security.protocol=SASL_SSL"; echo "sasl.mechanism=$1"
+      echo "sasl.jaas.config=$mod required username=\"$KAFKA_USERNAME\" password=\"$KAFKA_PASSWORD\";"
       echo "ssl.truststore.type=PEM"; echo "ssl.truststore.location=/etc/edot/kafka/ca.crt"
-      echo "ssl.keystore.type=PEM"; echo "ssl.keystore.location=/tmp/keystore.pem"
       echo "ssl.endpoint.identification.algorithm=https"; } > /tmp/client.properties
-    timeout 60 /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server "$1" --command-config /tmp/client.properties 2>&1 \
-      | grep -E "^[^ ].*\(id: [0-9]+|Exception|ERROR" | sed "s/ -> .*//" | sort -u' _ "${BROKERS// /,}")" || true
+    timeout 60 /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server "$2" --command-config /tmp/client.properties 2>&1 \
+      | grep -E "^[^ ].*\(id: [0-9]+|Exception|ERROR" | sed "s/ -> .*//" | sort -u' _ "$MECHANISM" "${BROKERS// /,}")" || true
   if grep -q "(id:" <<<"$out"; then
-    echo "      ✓ certificat client accepté par les brokers ; brokers ANNONCÉS (advertised.listeners) :"
+    echo "      ✓ authentification réussie ; brokers ANNONCÉS (advertised.listeners) :"
     sed 's/^/        /' <<<"$(grep "(id:" <<<"$out")"
   else
     echo "      ✗ échec : $(grep -m1 -E "Exception|ERROR" <<<"$out")"; rc=1
   fi
   bold "==> OpenShift → Kafka : chaque broker annoncé (le client s'y connecte après le bootstrap)"
   for a in $(grep -oE "^[^ ]+:[0-9]+" <<<"$out" | sort -u); do
-    echo "    $a"; probe "${a%:*}" "${a##*:}" /etc/edot/kafka/ca.crt mtls || rc=1
+    echo "    $a"; probe "${a%:*}" "${a##*:}" /etc/edot/kafka/ca.crt || rc=1
   done
 
-  bold "==> Kafka : ACL du principal EDOT (Describe des topics, groupe $GROUP)"
+  bold "==> Kafka : ACL du compte EDOT (Describe des topics, groupe $GROUP)"
   # kafka-get-offsets (ListOffsets) ne demande que Describe : kafka-topics
   # --describe exigerait en plus DescribeConfigs, inutile à EDOT (constaté
   # avec Kafka 4.3).

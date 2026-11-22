@@ -1,0 +1,146 @@
+# Kafka de TEST : un broker KRaft unique (broker + controller), image
+# officielle Apache, aucun Operator. Configuration : server.properties.
+#
+# Sécurité : compatible SCC OpenShift restricted-v2 ET Pod Security
+# « restricted » : aucun UID fixé ici (OpenShift l'attribue ; l'overlay
+# kubernetes le fixe), rootfs en lecture seule, aucune capability. Le
+# processus n'écrit que dans le PVC (données) et /tmp (emptyDir).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  labels:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/component: broker
+    app.kubernetes.io/version: "4.3.2"
+spec:
+  serviceName: kafka-headless
+  replicas: 1
+  podManagementPolicy: Parallel
+  # Les données de test ne sont PAS supprimées avec le StatefulSet : seul
+  # scripts/cleanup.sh --delete-pvc les supprime (README §11).
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kafka
+      app.kubernetes.io/component: broker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kafka
+        app.kubernetes.io/component: broker
+        app.kubernetes.io/version: "4.3.2"
+    spec:
+      # Sans cela, Kubernetes injecte KAFKA_PORT, KAFKA_SERVICE_HOST… (Service
+      # « kafka ») : variables KAFKA_* que les scripts Kafka interprètent.
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: kafka
+          image: apache/kafka:4.3.2@sha256:852a0d49fc4e656b022e7f23785411802c9a088c78a7c5e39f33969de9c227a7
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              # Formatage KRaft idempotent (sans effet si déjà formaté), puis
+              # démarrage du broker avec la configuration de la ConfigMap.
+              /opt/kafka/bin/kafka-storage.sh format --ignore-formatted \
+                --cluster-id "$CLUSTER_ID" --config /etc/kafka-test/server.properties
+              exec /opt/kafka/bin/kafka-server-start.sh /etc/kafka-test/server.properties
+          env:
+            # Identifiant du cluster KRaft (non secret), fixé pour que le
+            # formatage soit reproductible.
+            - name: CLUSTER_ID
+              value: C_OTk0XuRwOpsFsewQY7OQ
+            # Heap JVM : 512 Mio au plus pour une limite conteneur de 1 Gio.
+            # Le reste couvre metaspace, threads, buffers réseau (direct
+            # memory) et le cache de pages compté dans la limite. Augmenter
+            # les deux ensemble (README §10).
+            - name: KAFKA_HEAP_OPTS
+              value: "-Xms256m -Xmx512m"
+            # Logs applicatifs sur la sortie standard uniquement.
+            - name: KAFKA_LOG4J_OPTS
+              value: "-Dlog4j2.configurationFile=/etc/kafka/docker/log4j2.yaml"
+            # Répertoire de logs (kafka-run-class.sh) : /tmp, pas le rootfs.
+            - name: LOG_DIR
+              value: /tmp/kafka-logs
+            # Sans « -loggc » : pas de fichiers GC (jusqu'à 1 Gio) sur /tmp.
+            - name: EXTRA_ARGS
+              value: "-name kafkaServer"
+          ports:
+            - name: kafka
+              containerPort: 9092
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          # Démarrage : formatage + chargement des segments, jusqu'à 3 min.
+          startupProbe:
+            tcpSocket:
+              port: kafka
+            periodSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            tcpSocket:
+              port: kafka
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: kafka
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/kafka/data
+            - name: config
+              mountPath: /etc/kafka-test
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: kafka-config
+        - name: tmp
+          emptyDir:
+            sizeLimit: 128Mi
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: kafka
+          app.kubernetes.io/part-of: edot-integration-test
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        volumeMode: Filesystem
+        # StorageClass : celle par défaut du cluster, sauf patch d'overlay
+        # (overlays/kubernetes : local-path, sans réplication).
+        resources:
+          requests:
+            storage: 5Gi

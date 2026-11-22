@@ -1,0 +1,178 @@
+# Kibana de TEST : interface de consultation de l'Elasticsearch mono-nœud.
+# Aucune donnée locale persistante (tout est stocké dans Elasticsearch) :
+# Deployment sans PVC. Même profil de sécurité que les autres composants :
+# Pod Security « restricted », rootfs en lecture seule, aucune capability.
+#
+# Identités :
+#   - initContainer : superutilisateur elastic, uniquement pour fixer le mot
+#     de passe de kibana_system (init-kibana-system.sh) ;
+#   - Kibana : kibana_system vers Elasticsearch ; les personnes se
+#     connectent à l'interface avec leur propre compte Elasticsearch
+#     (elastic dans cet environnement de test).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kibana
+  labels:
+    app.kubernetes.io/name: kibana
+    app.kubernetes.io/component: ui
+    app.kubernetes.io/version: "9.5.6"
+spec:
+  replicas: 1
+  # Premier téléchargement de l'image (~1 Go) : jusqu'à 15-20 min sur ce
+  # cluster. Au-delà du délai par défaut (10 min), le Deployment passerait en
+  # ProgressDeadlineExceeded et Argo CD afficherait l'Application Degraded.
+  progressDeadlineSeconds: 1800
+  # Un seul pod à la fois : deux Kibana de versions différentes sur le même
+  # index système pendant une mise à jour seraient refusés par la migration.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kibana
+      app.kubernetes.io/component: ui
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kibana
+        app.kubernetes.io/component: ui
+        app.kubernetes.io/version: "9.5.6"
+        edot-integration-test/elasticsearch-client: "true"
+    spec:
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: kibana-system-password
+          image: docker.elastic.co/kibana/kibana:9.5.6@sha256:c7ed45da5c3cfea020fc6c99ce027f4d21d19dab330379c5115d5eb95f6ecebc
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/scripts/init-kibana-system.sh"]
+          env:
+            - name: ES_URL
+              value: http://elasticsearch.edot-integration-test.svc.cluster.local:9200
+            - name: ELASTIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elasticsearch-test-credentials
+                  key: elastic-password
+            - name: KIBANA_SYSTEM_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elasticsearch-test-credentials
+                  key: kibana-system-password
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: kibana
+          image: docker.elastic.co/kibana/kibana:9.5.6@sha256:c7ed45da5c3cfea020fc6c99ce027f4d21d19dab330379c5115d5eb95f6ecebc
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: KIBANA_SYSTEM_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elasticsearch-test-credentials
+                  key: kibana-system-password
+            - name: KIBANA_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: elasticsearch-test-credentials
+                  key: kibana-encryption-key
+            # Tas Node.js : 768 Mio pour une limite de 1,5 Gio.
+            - name: NODE_OPTIONS
+              value: "--max-old-space-size=768"
+          ports:
+            - name: http
+              containerPort: 5601
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 100m
+              memory: 768Mi
+            limits:
+              cpu: "1"
+              memory: 1536Mi
+          # Premier démarrage (migration des index système) : jusqu'à 5 min.
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            failureThreshold: 30
+          # Prêt = Kibana a fini de démarrer : /api/status répond 401 (sans
+          # authentification) ou 200, et non 503 « server is not ready yet ».
+          readinessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                - >-
+                  code=$(curl -s -m 4 -o /dev/null -w '%{http_code}' http://127.0.0.1:5601/api/status);
+                  [ "$code" = 200 ] || [ "$code" = 401 ]
+            periodSeconds: 10
+            timeoutSeconds: 6
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: config
+              mountPath: /usr/share/kibana/config/kibana.yml
+              subPath: kibana.yml
+              readOnly: true
+            - name: data
+              mountPath: /usr/share/kibana/data
+            - name: logs
+              mountPath: /usr/share/kibana/logs
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: kibana-config
+        - name: scripts
+          configMap:
+            name: kibana-scripts
+            defaultMode: 0555
+        - name: data
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: logs
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi

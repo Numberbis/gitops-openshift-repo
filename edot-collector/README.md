@@ -17,7 +17,7 @@ EDOT (Elastic Distribution of OpenTelemetry) est déployé sur OpenShift avec le
 | Image | `docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6` (UBI 9, digest `sha256:9caf6481…c8ee0f1`) |
 | Collector embarqué | OpenTelemetry Collector **v0.163.0** (core + contrib) |
 | Chart | `open-telemetry/opentelemetry-collector` **0.178.3** |
-| Application Argo CD | [`apps/40-edot-collector-app.yaml`](../apps/40-edot-collector-app.yaml) — projet `default`, **sync manuelle**, non listée dans `apps/kustomization.yaml` |
+| Application Argo CD | [`argocd/applications/infra/edot-collector.yaml`](../../argocd/applications/infra/edot-collector.yaml) — projet `infra`, **sync manuelle** |
 | Namespace | `edot` |
 | Déploiement | StatefulSet, 2 réplicas, 1 PVC de 10 Gi par réplica |
 
@@ -66,7 +66,7 @@ flowchart LR
     subgraph ES["Elasticsearch 9.x EXTERNE"]
         DS["data streams logs-*.otel-*"]
     end
-    T -- "TCP/TLS mutuel (SSL + certificat client)<br/>bootstrap + advertised.listeners" --> R
+    T -- "TCP/TLS SASL_SSL<br/>bootstrap + advertised.listeners" --> R
     E -- "HTTPS bulk<br/>API Key" --> DS
 ```
 
@@ -89,14 +89,13 @@ flowchart LR
 | [`values-elasticsearch.yaml`](values-elasticsearch.yaml) | exporter Elasticsearch, data stream — **TODO** |
 | [`values-processing.yaml`](values-processing.yaml) | `memory_limiter`, **filtres** et **suppressions de champs** OTTL |
 | [`kustomization.yaml`](kustomization.yaml) | ressources hors chart : ExternalSecrets, alertes, dashboard, NetworkPolicies |
-| [`external-secrets/`](external-secrets/) | SecretStore Vault + ExternalSecrets (maintenus à la main) |
+| [`external-secrets/`](external-secrets/) | SecretStore Vault + ExternalSecrets (**générés** par `scripts/vault-secrets.py render`) |
 | [`network-policies/`](network-policies/) | default deny + sorties Kafka / Elasticsearch (**TODO**) + DNS + scrape |
 | [`prometheusrule.yaml`](prometheusrule.yaml) | 21 alertes |
 | [`dashboards/edot-collector.json`](dashboards/edot-collector.json) | dashboard Grafana |
 | [`tests/`](tests/) | validation statique, contrôle préalable, diagnostic réseau, banc fonctionnel |
 | [`TODO.md`](TODO.md) | **tous** les paramètres à fournir avant la production |
 | [`VALIDATION.md`](VALIDATION.md) | compte rendu des validations et tests réalisés, et de ceux non exécutés |
-| [`docs/tutoriel-connexions-kafka-elasticsearch.md`](docs/tutoriel-connexions-kafka-elasticsearch.md) | **tutoriel pas à pas** : connexion Kafka (mTLS, ACL sur CN) et Elasticsearch, vérifications, dépannage |
 
 ## 2. Choix d'EDOT
 
@@ -188,8 +187,8 @@ fois dans `valueFiles`.
 | | Kafka | Elasticsearch |
 |---|---|---|
 | Adresse | `brokers` : `hôte:port` externes (≥ 2 pour le bootstrap) | `endpoints` : `https://hôte:port` (nœuds ou load balancer) |
-| Protocole | TCP + TLS mutuel (`security.protocol=SSL`) | HTTPS (API bulk) |
-| Authentification | **certificat client** (mTLS) ; principal = DN du certificat, ACL sur le CN | API Key |
+| Protocole | TCP + TLS (SASL_SSL) | HTTPS (API bulk) |
+| Authentification | SASL SCRAM-SHA-512/256 ou PLAIN | API Key |
 | Vérification TLS | CA dédiée, nom d'hôte vérifié | CA dédiée, nom d'hôte vérifié |
 | Particularité | après le bootstrap, connexion aux **advertised.listeners** de chaque broker | **découverte des nœuds désactivée** (sinon contournement du load balancer vers des IP internes) |
 | Paramètres | [`values-kafka.yaml`](values-kafka.yaml) | [`values-elasticsearch.yaml`](values-elasticsearch.yaml) |
@@ -207,8 +206,8 @@ Dans les métriques, `node_id="seed_0"` désigne une connexion de bootstrap et
 
 | # | Source | Destination | Port | Protocole | Contrôles |
 |---|---|---|---|---|---|
-| 1 | pods `edot-collector` | brokers Kafka **bootstrap** | TODO | TCP, TLS mutuel | DNS, pare-feu, NetworkPolicy `allow-egress-kafka` |
-| 2 | pods `edot-collector` | **chaque** broker annoncé (`advertised.listeners`) | TODO | TCP, TLS mutuel | idem — souvent oublié |
+| 1 | pods `edot-collector` | brokers Kafka **bootstrap** | TODO | TCP, TLS, SASL | DNS, pare-feu, NetworkPolicy `allow-egress-kafka` |
+| 2 | pods `edot-collector` | **chaque** broker annoncé (`advertised.listeners`) | TODO | TCP, TLS, SASL | idem — souvent oublié |
 | 3 | pods `edot-collector` | Elasticsearch (nœuds ou VIP) | TODO (HTTPS) | TCP, TLS | DNS, pare-feu, liste blanche ES/proxy, `allow-egress-elasticsearch` |
 | 4 | pods `edot-collector` | DNS du cluster | 53 / 5353 | UDP, TCP | `allow-dns` (OpenShift : `openshift-dns` port 5353 ; Kubernetes : CoreDNS 53) |
 | 5 | Prometheus (`monitoring` ou `openshift-user-workload-monitoring`) | pods `edot-collector` | 8888 | HTTP | `allow-metrics-ingress` |
@@ -252,18 +251,9 @@ d'inactivité (≥ `timeout` 30 s) et son certificat (CA dans
 ## 9. Certificats et sécurité Kafka
 
 - **CA** : `ca.crt` (PEM, chaîne complète si intermédiaire) des Secrets
-  `edot-kafka-credentials` (CA des **brokers**) et `edot-elasticsearch-credentials`,
-  montés en lecture seule dans `/etc/edot/kafka/` et `/etc/edot/elasticsearch/`.
-  `reload_interval: 1h` : une CA ou un certificat renouvelé (via Vault/ESO) est
-  relu sans redémarrage.
-- **Certificat client Kafka (mTLS)** : `tls.crt` (certificat + intermédiaires,
-  usage `clientAuth`) et `tls.key` (PEM PKCS#8 **non chiffrée**) du Secret
-  `edot-kafka-credentials`, montés dans `/etc/edot/kafka/` en mode `0440`
-  (lecture par le groupe fsGroup de la SCC : `0400` serait illisible pour
-  l'UID arbitraire). Le broker dérive le **principal** du DN du certificat
-  (par défaut `User:CN=…,OU=…,O=…,C=…`, format RFC 2253, ou réduit au CN selon
-  `ssl.principal.mapping.rules`) : les ACL portent sur ce principal exact. La
-  CA qui signe ce certificat doit être dans le truststore des brokers.
+  `edot-kafka-credentials` et `edot-elasticsearch-credentials`, montés en
+  lecture seule dans `/etc/edot/kafka/` et `/etc/edot/elasticsearch/`.
+  `reload_interval: 1h` : une CA renouvelée (via Vault/ESO) est relue sans redémarrage.
 - **Vérification** : `insecure: false`, `insecure_skip_verify: false`,
   `min_version: "1.2"` sur les deux connexions. Le nom configuré doit figurer
   dans le certificat (SAN) : ne pas utiliser d'IP si le certificat porte des noms.
@@ -271,43 +261,39 @@ d'inactivité (≥ `timeout` 30 s) et son certificat (CA dans
 
 | security.protocol | Configuration | Statut |
 |---|---|---|
-| `SSL` (mTLS) | bloc `tls` avec `cert_file` / `key_file`, **sans** bloc `auth` | **fourni** (contrôlé par `validate-config.sh`) |
-| `SASL_SSL` | bloc `tls` + bloc `auth.sasl` | non utilisé (le cluster cible authentifie par certificat) |
+| `SASL_SSL` | bloc `tls` + bloc `auth.sasl` | **fourni** |
+| `SSL` (mTLS) | bloc `tls` avec `cert_file` / `key_file` (certificat client dans le Secret), sans `auth.sasl` | à adapter |
 | `SASL_PLAINTEXT`, `PLAINTEXT` | sans bloc `tls` | **exclus** (TLS obligatoire) |
 
-- **ACL minimales** du principal EDOT (validées sur le banc de test, en mTLS
-  avec ACL sur le DN) : `Read` + `Describe` sur chaque topic, `Read` sur le
-  consumer group. Aucun droit d'écriture (refus vérifié), aucun droit sur le
-  cluster.
-- **Procédure pas à pas** (CSR, contrôles du certificat, demande d'ACL, Vault,
-  vérifications, dépannage) : [docs/tutoriel-connexions-kafka-elasticsearch.md](docs/tutoriel-connexions-kafka-elasticsearch.md).
+- **ACL minimales** du compte EDOT (validées sur le banc de test) : `Read` +
+  `Describe` sur chaque topic, `Read` sur le consumer group. Aucun droit
+  d'écriture, aucun droit sur le cluster.
 
 ## 10. Gestion des secrets
 
 Mécanisme existant du dépôt : **Vault + External Secrets Operator**, un
-SecretStore par namespace (`external-secrets/store/`).
+SecretStore par namespace ([docs/security/vault-external-secrets.md](../../docs/security/vault-external-secrets.md)).
 
 | Secret Kubernetes | Chemin Vault | Clés | Consommation |
 |---|---|---|---|
-| `edot-kafka-credentials` | `secret/kubernetes/edot/edot-kafka-credentials` | `ca.crt`, `tls.crt`, `tls.key` | fichiers `/etc/edot/kafka/ca.crt`, `tls.crt`, `tls.key` (mTLS) |
+| `edot-kafka-credentials` | `secret/kubernetes/edot/edot-kafka-credentials` | `username`, `password`, `ca.crt` | env `KAFKA_USERNAME`, `KAFKA_PASSWORD` ; fichier `/etc/edot/kafka/ca.crt` |
 | `edot-elasticsearch-credentials` | `secret/kubernetes/edot/edot-elasticsearch-credentials` | `api-key`, `ca.crt` | env `ELASTICSEARCH_API_KEY` ; fichier `/etc/edot/elasticsearch/ca.crt` |
 
-Les ExternalSecrets de `external-secrets/` sont **maintenus à la main** dans ce
-dépôt (le générateur `scripts/vault-secrets.py` du dépôt d'origine n'y est pas).
-Faire valider par l'administrateur Vault l'adresse, la CA (`caBundle`) et le
-rôle `eso-edot` du `SecretStore`.
+Déclarés dans l'inventaire [`infra/manual/external-secrets/inventory.yaml`](../manual/external-secrets/inventory.yaml)
+(namespace `edot`, `deployed: false`) ; manifests et policy Vault
+`eso-edot` (lecture seule de `secret/data/kubernetes/edot/*`) **générés** par
+`./scripts/vault-secrets.py render` — ne pas les éditer à la main.
 **Aucun Secret factice** n'est créé : tant que Vault n'est pas alimenté, les
 pods restent en `CreateContainerConfigError`.
 
-Création de la policy et du rôle Vault (une fois), puis des secrets :
-[tutoriel §2.2, §A4, §B4](docs/tutoriel-connexions-kafka-elasticsearch.md).
-En résumé :
+Procédure de création des vrais secrets (administrateur Vault) :
 
 ```bash
-vault kv put secret/kubernetes/edot/edot-kafka-credentials \
-  ca.crt=@kafka-brokers-ca.pem tls.crt=@edot-client-chain.crt tls.key=@edot-client.key
-printf '%s' "$ES_API_KEY" | vault kv put secret/kubernetes/edot/edot-elasticsearch-credentials \
-  api-key=- ca.crt=@es-ca.pem
+./scripts/vault-secrets.py login                         # session Vault (userpass)
+./scripts/vault-secrets.py setup-vault                   # dry-run : policy + rôle eso-edot
+./scripts/vault-secrets.py setup-vault --apply           # (vérifier l'option exacte : --help)
+./scripts/vault-secrets.py import --app edot             # saisie MASQUÉE des valeurs (CA : multiligne)
+./scripts/vault-secrets.py check --app edot              # présence des clés, sans afficher de valeur
 ```
 
 Rotation : mettre à jour Vault ; ESO réécrit le Secret dans l'heure
@@ -405,8 +391,8 @@ Body texte JSON. Les champs voisins sont conservés.
 ### 12.3 Valider une modification
 
 ```bash
-edot-collector/tests/validate-config.sh            # syntaxe OTTL (binaire EDOT), ~1 min
-edot-collector/tests/functional/run-tests.py filtering   # effet réel, ~3 min (Docker)
+infra/edot-collector/tests/validate-config.sh            # syntaxe OTTL (binaire EDOT), ~1 min
+infra/edot-collector/tests/functional/run-tests.py filtering   # effet réel, ~3 min (Docker)
 ```
 
 Ajouter un échantillon dans `tests/functional/samples/` pour chaque nouvelle
@@ -561,13 +547,11 @@ distribution.
 
 ## 16. Déploiement Argo CD et mise en service
 
-L'Application ([`apps/40-edot-collector-app.yaml`](../apps/40-edot-collector-app.yaml),
-namespace `openshift-gitops`, projet `default`) suit la convention « chart
-distant + values du dépôt + répertoire Kustomize compagnon ». L'App-of-Apps
-`root-monitoring-stack` synchronise `apps/` : le fichier n'est **volontairement
-pas** listé dans `apps/kustomization.yaml` tant que la mise en service n'est
-pas décidée. Différences volontaires : **aucune synchronisation automatique**
-et Application **non enregistrée** par défaut.
+L'Application suit la convention du dépôt « chart distant + values du dépôt +
+répertoire Kustomize compagnon » (comme `loki`, `falco`), projet `infra`
+(source Helm déjà autorisée). **Pas d'App-of-Apps** dans ce dépôt : une
+Application est enregistrée par `kubectl apply`. Différences volontaires :
+**aucune synchronisation automatique** et Application **non enregistrée**.
 
 Mise en service :
 
@@ -579,7 +563,7 @@ Mise en service :
    `tests/preflight.sh` (aucun TODO).
 4. Après merge : enregistrer l'Application (sync **manuelle**) :
    ```bash
-   kubectl apply -f apps/40-edot-collector-app.yaml
+   kubectl apply -f argocd/applications/infra/edot-collector.yaml
    ```
 5. **Synchronisation partielle** d'abord (namespace, Secrets, NetworkPolicies),
    sans démarrer EDOT :
@@ -593,8 +577,8 @@ Mise en service :
      --resource networking.k8s.io:NetworkPolicy:edot/allow-dns \
      --resource networking.k8s.io:NetworkPolicy:edot/allow-egress-kafka \
      --resource networking.k8s.io:NetworkPolicy:edot/allow-egress-elasticsearch
-   edot-collector/tests/preflight.sh --live
-   edot-collector/tests/network-diagnostics.sh all
+   infra/edot-collector/tests/preflight.sh --live
+   infra/edot-collector/tests/network-diagnostics.sh all
    ```
 6. **Synchronisation complète** (`argocd app sync edot-collector`), puis
    vérifications du §18.1 ; tests d'intégration sur un topic de recette si
@@ -608,7 +592,7 @@ membres statiques : pas de rebalance si le redémarrage dure moins de 45 s).
 
 **Suivi des versions** : chart dans `targetRevision`, image dans
 `values.yaml` (`image.tag`), toutes deux vérifiées par `tests/validate-config.sh`
-(digest de l'image). Historique : `git log -- edot-collector apps/40-edot-collector-app.yaml`,
+(digest de l'image). Historique : `git log -- infra/edot-collector argocd/applications/infra/edot-collector.yaml`,
 `argocd app history edot-collector`.
 
 ## 17. Rollback
@@ -647,11 +631,10 @@ contiennent des données personnelles) : ajouter temporairement un exporter
 | Symptôme | Causes probables | Vérifications / actions |
 |---|---|---|
 | **ImagePullBackOff** | `docker.elastic.co` inaccessible depuis les nœuds, miroir non configuré, tag absent | `oc -n edot describe pod` ; configurer un miroir (`image.repository`, `imagePullSecrets`) ; tag/digest : `tests/validate-config.sh` |
-| **CreateContainerConfigError** | Secret absent (Vault non alimenté, ExternalSecret en erreur) | `oc -n edot get externalsecret` ; `oc -n edot describe externalsecret <nom>` ; `vault kv get` (noms des clés) |
+| **CreateContainerConfigError** | Secret absent (Vault non alimenté, ExternalSecret en erreur) | `oc -n edot get externalsecret` ; `./scripts/vault-secrets.py check --app edot` |
 | **CrashLoopBackOff** | configuration refusée (TODO restant, option invalide), OOMKill, file bbolt corrompue, `runAsNonRoot` refusé | `oc logs --previous` (message `cannot unmarshal`, `invalid`) ; `tests/preflight.sh` ; sur Kubernetes standard : profil `values-kubernetes.yaml` |
 | **Kafka connection refused** | port, pare-feu, NetworkPolicy (CIDR), broker annoncé injoignable | `otelcol_kafka_broker_connects{outcome="failure"}` (node_id) ; `tests/network-diagnostics.sh kafka` (bootstrap **et** advertised.listeners) ; EgressIP autorisée ? |
-| **Kafka : certificat client refusé** | CA du client absente du truststore des brokers (`unknown certificate authority`), usage `clientAuth` manquant ou certificat expiré (`bad certificate`), aucun certificat présenté (`certificate required`), clé illisible (`permission denied` : mode ≠ 0440) ou chiffrée | `network-diagnostics.sh kafka` (sujet, usage, correspondance clé/certificat, mTLS sur chaque broker) ; tutoriel §A11 |
-| **Kafka : `TOPIC_AUTHORIZATION_FAILED` / `GROUP_AUTHORIZATION_FAILED`** | ACL absente, **principal mal écrit** (DN complet vs CN seul, ordre, espaces), `group_id` ≠ groupe autorisé, ACL restreinte par hôte (EgressIP) | `network-diagnostics.sh kafka` (affiche le principal) ; journal de l'autorisateur des brokers |
+| **Kafka authentication failed** | identifiants, mécanisme SASL, compte inexistant, ACL | logs `SASL` / `authentication` ; `network-diagnostics.sh kafka` (authentification + ACL) ; mécanisme dans values-kafka.yaml |
 | Kafka : TLS / certificat | CA incomplète, nom absent du SAN, broker annoncé par IP | `network-diagnostics.sh kafka` (vérification par nom) |
 | **Elasticsearch 403** | privilèges de l'API Key (`create_doc`, `auto_configure`, `monitor`), data stream hors `names`, proxy | requête : retentée, export bloqué (`EdotElasticsearchExportBlocked`) ; par document : `otelcol_elasticsearch_docs_processed{http_response_status_code="403"}` ; `network-diagnostics.sh elasticsearch` (`_has_privileges`) |
 | Elasticsearch 401 | API Key révoquée, expirée, mal copiée (valeur `encoded` attendue) | **aucun log** : `http_client_request_duration_count{http_response_status_code="401"}`, alerte `EdotElasticsearchAuthRejected` ; export bloqué sans perte (testé) ; corriger Vault puis `rollout restart` |
@@ -760,12 +743,12 @@ l'abandon (puis rejeu), retirer 401/403 de `retry_on_status`.
 |---|---|---|
 | Validation statique : image (digest), `helm lint`, `helm template`, contrôles de sécurité et de fiabilité, `elastic-agent otel validate` (TODO refusés / valeurs de test acceptées), Kustomize | `tests/validate-config.sh --self-test` | Docker, Internet (chart, image) |
 | Contrôle préalable (TODO restants ; `--live` : cluster en lecture seule) | `tests/preflight.sh [--live]` | aucun / cluster |
-| Banc fonctionnel et résilience (Kafka 4.3 mTLS + ACL sur le DN, Elasticsearch 9.5.6 HTTPS + API Key minimale, 2 réplicas EDOT en conditions OpenShift) | `tests/functional/run-tests.py [filtering\|resilience\|all]` | Docker local |
+| Banc fonctionnel et résilience (Kafka 4.3 SASL_SSL + ACL, Elasticsearch 9.5.6 HTTPS + API Key minimale, 2 réplicas EDOT en conditions OpenShift) | `tests/functional/run-tests.py [filtering\|resilience\|all]` | Docker local |
 | Diagnostic réseau depuis le namespace | `tests/network-diagnostics.sh [kafka\|elasticsearch\|all]` | cluster cible, TODO renseignés |
 
 `tests/values-test.yaml` remplace les TODO par des valeurs **fictives** du banc
 local ; il n'est référencé par aucune Application (contrôlé). En CI :
-aucune CI n'est configurée dans ce dépôt pour ces scripts : les lancer avant chaque PR.
+job `edot-config` de [`gitops-security.yaml`](../../.github/workflows/gitops-security.yaml) (bloquant).
 
 Limite constatée : `elastic-agent otel validate` **ne détecte pas** un
 encodage Kafka inconnu (erreur seulement au démarrage) : contrôlé

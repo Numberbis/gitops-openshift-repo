@@ -1,0 +1,53 @@
+# Accès à Kibana par le tailnet uniquement (même mécanisme que Grafana, Argo
+# CD, Vault : infra/tailscale-ingresses/) : https://edot-kibana.<tailnet>.ts.net,
+# certificat TLS géré par Tailscale, aucune exposition Internet ni LAN.
+# Connexion à Kibana : compte Elasticsearch (elastic dans cet environnement
+# de test), en plus des ACL du tailnet.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: edot-kibana-tailscale
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts:
+        - edot-kibana
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kibana
+                port:
+                  name: http
+---
+# Seul le proxy Tailscale de CET Ingress (namespace tailscale) joint Kibana.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kibana-from-tailscale
+  labels:
+    network-policy-phase: allow
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          - kibana
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: tailscale
+          podSelector:
+            matchLabels:
+              tailscale.com/parent-resource: edot-kibana-tailscale
+              tailscale.com/parent-resource-ns: edot-integration-test
+      ports:
+        - protocol: TCP
+          port: 5601

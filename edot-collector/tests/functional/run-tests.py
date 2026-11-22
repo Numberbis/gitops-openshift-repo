@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Tests fonctionnels et de résilience de l'EDOT Collector, sur un banc LOCAL.
 
-Monte un Kafka 4.3 (listener SSL à certificat client OBLIGATOIRE — mTLS —,
-ACL sur le DN du certificat) et un Elasticsearch 9.5.6
+Monte un Kafka 4.3 (SASL_SSL, SCRAM-SHA-512, ACL) et un Elasticsearch 9.5.6
 (HTTPS, API Key à privilèges minimaux) JETABLES dans un réseau Docker
 `internal`, rend la configuration EXACTE du dépôt (helm template des values
 de déploiement + tests/values-test.yaml qui remplace les TODO), lance deux
@@ -12,9 +11,6 @@ lecture seule, aucune capability, file persistante sur volume), puis :
   filtering   12 échantillons OTLP JSON (samples/) : suppression d'événements,
               suppression de champs (ressource, scope, log, Body imbriqué,
               Body JSON texte), conservation du reste, message invalide.
-  (toujours)  mTLS : certificat d'EDOT accepté, chaîne avec intermédiaire,
-              advertised.listeners, ACL ; refus sans certificat, avec une CA
-              inconnue, avec un CN non autorisé, et refus d'écriture pour EDOT.
   resilience  indisponibilité d'Elasticsearch (arrêt, gel → timeouts),
               redémarrage et crash d'EDOT pendant la consommation, crash avec
               file persistante non vide, rebalance, API Key révoquée (401),
@@ -26,7 +22,7 @@ aléatoirement dans un répertoire temporaire, jamais affichés, et détruits à
 la fin (sauf --keep).
 
 Usage :
-  edot-collector/tests/functional/run-tests.py [filtering|resilience|all] [--keep]
+  infra/edot-collector/tests/functional/run-tests.py [filtering|resilience|all] [--keep]
 
 Prérequis : docker (compose v2), helm, openssl, python3 + PyYAML. Variable
 HELM pour un binaire précis. Durée : ~3 min (filtering), ~15 min (all).
@@ -51,20 +47,16 @@ import yaml
 
 HERE = Path(__file__).resolve().parent
 EDOT_DIR = HERE.parent.parent
-ROOT = EDOT_DIR.parent
+ROOT = EDOT_DIR.parent.parent
 COMPOSE_FILE = HERE / "compose.yaml"
 PROJECT = "edot-functional-test"
 TOPIC = "otlp-logs-test"
 GROUP = "edot-functional-test"
 PARTITIONS = 4
-# DN des certificats clients (format RFC 2253 = principal Kafka par défaut).
-EDOT_SUBJ = "/O=EdotTest/OU=Observabilite/CN=edot-collector-test"
-EDOT_PRINCIPAL = "User:CN=edot-collector-test,OU=Observabilite,O=EdotTest"
-PRODUCER_PRINCIPAL = "User:CN=producer-test,O=EdotTest"
 DATA_STREAM = "logs-edottest.otel-functional"
 EDOT = ("edot-collector-0", "edot-collector-1")
 HELM = os.environ.get("HELM", "helm")
-CHART_APP = ROOT / "apps/40-edot-collector-app.yaml"
+CHART_APP = ROOT / "argocd/applications/infra/edot-collector.yaml"
 
 RESULTS: list[tuple[str, bool, str]] = []
 
@@ -98,10 +90,9 @@ class Bench:
         self.secrets = {
             "ELASTIC_PASSWORD": secrets.token_urlsafe(24),
             "KAFKA_KEYSTORE_PASSWORD": secrets.token_urlsafe(24),
+            "KAFKA_EDOT_PASSWORD": secrets.token_urlsafe(24),
+            "KAFKA_PRODUCER_PASSWORD": secrets.token_urlsafe(24),
         }
-        # Extraits des clés privées clientes : ne doivent jamais apparaître
-        # dans les logs d'EDOT (scenario_secrets).
-        self.key_markers: list[str] = []
         self.api_key_id = ""
         self.api_key = ""
         self.env = dict(os.environ, EDOT_TEST_WORK=str(self.work),
@@ -116,7 +107,7 @@ class Bench:
         return self.compose("exec", "-T", service, *cmd, **kw)
 
     def secret_values(self) -> list[str]:
-        return [v for v in (*self.secrets.values(), self.api_key, *self.key_markers) if v]
+        return [v for v in (*self.secrets.values(), self.api_key) if v]
 
     # ------------------------------------------------------------ setup
     def certificates(self):
@@ -134,7 +125,6 @@ class Bench:
         run(["openssl", "pkcs12", "-export", "-in", str(w / "kafka-test.crt"), "-inkey", str(w / "kafka-test.key"),
              "-name", "kafka-test", "-out", str(w / "kafka.p12"), "-passout", "env:KAFKA_KEYSTORE_PASSWORD"],
             env=self.env)
-        self.client_certificates()
         es = w / "es-certs"
         es.mkdir()
         shutil.copy(w / "elasticsearch-test.crt", es / "es.crt")
@@ -143,50 +133,6 @@ class Bench:
         for p in [*w.iterdir(), *es.iterdir()]:
             if p.is_file():
                 p.chmod(0o644)  # banc jetable : lisible par les UID des conteneurs
-
-    def client_certificates(self):
-        """Certificats CLIENTS (mTLS), comme une PKI d'entreprise :
-          * edot      : signé par une CA INTERMÉDIAIRE (les brokers n'ont que
-                        la racine) → EDOT doit présenter la chaîne (tls.crt) ;
-          * producer  : producteur de test (ACL Write) ;
-          * intruder  : bonne CA, CN sans aucune ACL → refus d'AUTORISATION ;
-          * rogue     : MÊME DN qu'EDOT mais CA inconnue des brokers → refus TLS.
-        Clés PEM PKCS#8 non chiffrées (format attendu par EDOT et par les
-        keystores PEM des outils Kafka)."""
-        w = self.work
-        ossl = lambda *a: run(["openssl", *a])
-        (w / "intermediate.ext").write_text("basicConstraints=critical,CA:TRUE,pathlen:0\n"
-                                            "keyUsage=critical,keyCertSign,cRLSign\n")
-        ossl("req", "-newkey", "rsa:2048", "-nodes", "-subj", "/O=EdotTest/CN=edot-test-clients-ca",
-             "-keyout", str(w / "clients-ca.key"), "-out", str(w / "clients-ca.csr"))
-        ossl("x509", "-req", "-in", str(w / "clients-ca.csr"), "-CA", str(w / "ca.crt"), "-CAkey", str(w / "ca.key"),
-             "-CAcreateserial", "-days", "2", "-extfile", str(w / "intermediate.ext"), "-out", str(w / "clients-ca.crt"))
-        ossl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2", "-subj", "/CN=rogue-ca",
-             "-keyout", str(w / "rogue-ca.key"), "-out", str(w / "rogue-ca.crt"))
-        (w / "client.ext").write_text("extendedKeyUsage=clientAuth\nkeyUsage=critical,digitalSignature,keyEncipherment\n")
-        for name, subj, ca in (("edot-client", EDOT_SUBJ, "clients-ca"),
-                               ("producer", "/O=EdotTest/CN=producer-test", "clients-ca"),
-                               ("intruder", "/O=EdotTest/CN=intruder-test", "clients-ca"),
-                               ("rogue", EDOT_SUBJ, "rogue-ca")):
-            ossl("req", "-newkey", "rsa:2048", "-nodes", "-subj", subj,
-                 "-keyout", str(w / f"{name}.key"), "-out", str(w / f"{name}.csr"))
-            ossl("x509", "-req", "-in", str(w / f"{name}.csr"), "-CA", str(w / f"{ca}.crt"), "-CAkey", str(w / f"{ca}.key"),
-                 "-CAcreateserial", "-days", "2", "-extfile", str(w / "client.ext"), "-out", str(w / f"{name}.crt"))
-            chain = (w / f"{name}.crt").read_text() + ((w / "clients-ca.crt").read_text() if ca == "clients-ca" else "")
-            (w / f"{name}-chain.crt").write_text(chain)
-            # Keystore PEM des outils Kafka : clé PKCS#8 + chaîne.
-            (w / f"{name}-keystore.pem").write_text((w / f"{name}.key").read_text() + chain)
-            key_lines = (w / f"{name}.key").read_text().splitlines()
-            if not key_lines[0].startswith("-----BEGIN PRIVATE KEY-----"):
-                raise RuntimeError(f"clé {name} : PKCS#8 non chiffrée attendue")
-            self.key_markers.append(key_lines[1])
-        base = "security.protocol=SSL\nssl.truststore.type=PEM\nssl.truststore.location=/work/ca.crt\n" \
-               "ssl.endpoint.identification.algorithm=https\n"
-        for name in ("edot-client", "producer", "intruder", "rogue"):
-            extra = "linger.ms=20\nbatch.size=262144\n" if name == "producer" else ""
-            (w / f"{name}.properties").write_text(
-                base + f"ssl.keystore.type=PEM\nssl.keystore.location=/work/{name}-keystore.pem\n" + extra)
-        (w / "nocert.properties").write_text(base)
 
     def render(self, extra_values: dict | None = None) -> Path:
         """Rend le chart comme Argo CD (chart, version et valueFiles lus dans
@@ -218,12 +164,21 @@ class Bench:
         kb = ["--bootstrap-server", "localhost:19092"]
         k("/opt/kafka/bin/kafka-topics.sh", *kb, "--create", "--topic", TOPIC, "--partitions", str(PARTITIONS),
           "--replication-factor", "1")
+        for user, pw in (("edot", self.secrets["KAFKA_EDOT_PASSWORD"]), ("producer", self.secrets["KAFKA_PRODUCER_PASSWORD"])):
+            k("/opt/kafka/bin/kafka-configs.sh", *kb, "--alter", "--entity-type", "users", "--entity-name", user,
+              "--add-config", f"SCRAM-SHA-512=[password={pw}]")
         acl = ["/opt/kafka/bin/kafka-acls.sh", *kb, "--add"]
-        # ACL sur le DN des certificats clients. Privilèges minimaux d'EDOT
-        # (README §9) : lecture du topic et du groupe, rien d'autre.
-        k(*acl, "--allow-principal", EDOT_PRINCIPAL, "--operation", "Read", "--operation", "Describe", "--topic", TOPIC)
-        k(*acl, "--allow-principal", EDOT_PRINCIPAL, "--operation", "Read", "--group", GROUP)
-        k(*acl, "--allow-principal", PRODUCER_PRINCIPAL, "--operation", "Write", "--operation", "Describe", "--topic", TOPIC)
+        # Privilèges minimaux d'EDOT (README §9) : lecture du topic et du groupe.
+        k(*acl, "--allow-principal", "User:edot", "--operation", "Read", "--operation", "Describe", "--topic", TOPIC)
+        k(*acl, "--allow-principal", "User:edot", "--operation", "Read", "--group", GROUP)
+        k(*acl, "--allow-principal", "User:producer", "--operation", "Write", "--operation", "Describe", "--topic", TOPIC)
+        (self.work / "producer.properties").write_text(
+            "security.protocol=SASL_SSL\nsasl.mechanism=SCRAM-SHA-512\n"
+            "sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required "
+            f"username=\"producer\" password=\"{self.secrets['KAFKA_PRODUCER_PASSWORD']}\";\n"
+            "ssl.truststore.type=PEM\nssl.truststore.location=/work/ca.crt\n"
+            "linger.ms=20\nbatch.size=262144\n")
+        (self.work / "producer.properties").chmod(0o644)
         self.wait(lambda: self.es("GET", "/_cluster/health", check=False).get("status") in ("green", "yellow"), 180,
                   "Elasticsearch")
         self.create_api_key()
@@ -237,8 +192,8 @@ class Bench:
                 "indices": [{"names": ["logs-*.otel-*"], "privileges": ["auto_configure", "create_doc"]}]}}})
         self.api_key_id, self.api_key = r["id"], r["encoded"]
         env = self.work / "edot.env"
-        # Kafka : aucun identifiant en variable (mTLS, certificat monté en fichier).
-        env.write_text(f"ELASTICSEARCH_API_KEY={self.api_key}\n")
+        env.write_text(f"KAFKA_USERNAME=edot\nKAFKA_PASSWORD={self.secrets['KAFKA_EDOT_PASSWORD']}\n"
+                       f"ELASTICSEARCH_API_KEY={self.api_key}\n")
         env.chmod(0o600)
 
     def start_edot(self, *services: str, recreate: bool = False):
@@ -283,9 +238,8 @@ class Bench:
             return {}
 
     def produce(self, lines: list[str], key: str | None = None):
-        """Publie des messages (une ligne = un message) en mTLS (certificat du
-        producteur), comme un producteur réel, via le listener annoncé
-        kafka-test:9093."""
+        """Publie des messages (une ligne = un message) en SASL_SSL, comme un
+        producteur réel, via le listener annoncé kafka-test:9093."""
         props = ["--producer.config", "/work/producer.properties"]
         if key:
             lines = [f"{key}\t{line}" for line in lines]
@@ -610,80 +564,11 @@ def scenario_resilience(b: Bench):
     b.start_edot(recreate=True)
 
 
-def scenario_kafka_mtls(b: Bench):
-    """Mêmes commandes que tests/network-diagnostics.sh et le tutoriel (§A10),
-    plus les cas de refus attendus d'un cluster à ACL sur le CN."""
-    bold("==> Kafka mTLS : authentification par certificat client et ACL sur le DN")
-    boot = ["--bootstrap-server", "kafka-test:9093"]
-
-    def kcli(tool: str, props: str, *args: str, input: str | None = None) -> str:
-        p = b.exec("kafka-test", "timeout", "90", f"/opt/kafka/bin/{tool}", *boot, "--command-config"
-                   if tool != "kafka-console-producer.sh" else "--producer.config", f"/work/{props}.properties",
-                   *args, input=input, check=False, timeout=120)
-        return (p.stdout or "") + (p.stderr or "")
-
-    def why(out: str) -> str:
-        """Ligne utile d'une sortie Java (pas la dernière ligne de pile)."""
-        lines = [l.strip() for l in out.splitlines() if re.search(r"Exception|Error|failed|Could not", l)
-                 and not l.strip().startswith("at ")]
-        return (lines[0] if lines else out.strip()[-200:])[:200]
-
-    out = kcli("kafka-broker-api-versions.sh", "edot-client")
-    record("certificat EDOT (chaîne avec intermédiaire) accepté ; broker annoncé kafka-test:9093",
-           "kafka-test:9093 (id: 1" in out, "" if "(id: 1" in out else out.strip()[-300:])
-    out = kcli("kafka-get-offsets.sh", "edot-client", "--topic", TOPIC)
-    n = len(re.findall(rf"^{TOPIC}:\d+:", out, re.M))
-    record("ACL Describe du topic (kafka-get-offsets)", n == PARTITIONS, f"{n}/{PARTITIONS} partitions")
-    # Les réplicas viennent de démarrer : laisser le groupe se stabiliser.
-    end = time.time() + 120
-    while True:
-        out = kcli("kafka-consumer-groups.sh", "edot-client", "--describe", "--group", GROUP)
-        if (TOPIC in out and "edot-edot-collector-" in out) or time.time() > end:
-            break
-        time.sleep(5)
-    record("ACL du groupe : consommateurs EDOT visibles (kafka-consumer-groups --describe)",
-           TOPIC in out and "edot-edot-collector-" in out, "" if TOPIC in out else out.strip()[-300:])
-    p = b.exec(EDOT[0], "bash", "-c", "timeout 15 openssl s_client -connect kafka-test:9093 -servername kafka-test "
-               "-CAfile /etc/edot/kafka/ca.crt -verify_hostname kafka-test -verify_return_error "
-               "-cert /etc/edot/kafka/tls.crt -key /etc/edot/kafka/tls.key </dev/null 2>&1", check=False)
-    record("openssl s_client depuis EDOT (certificat broker vérifié, certificat client présenté)",
-           "Verify return code: 0 (ok)" in p.stdout and not re.search(r"alert", p.stdout, re.I))
-    m = b.metrics(EDOT[0])
-    record("EDOT connecté aux brokers (otelcol_kafka_broker_connects, outcome=success)",
-           m.get("otelcol_kafka_broker_connects{outcome=success}", 0) > 0 and
-           m.get("otelcol_kafka_broker_connects{outcome=failure}", 0) == 0,
-           f"success={m.get('otelcol_kafka_broker_connects{outcome=success}', 0):g}, "
-           f"failure={m.get('otelcol_kafka_broker_connects{outcome=failure}', 0):g}")
-
-    out = kcli("kafka-get-offsets.sh", "nocert", "--topic", TOPIC)
-    record("refus SANS certificat client", "SslAuthenticationException" in out or "SSL handshake failed" in out,
-           why(out))
-    out = kcli("kafka-get-offsets.sh", "rogue", "--topic", TOPIC)
-    record("refus d'un certificat au MÊME DN signé par une CA inconnue",
-           "SslAuthenticationException" in out or "SSL handshake failed" in out,
-           why(out))
-    out = kcli("kafka-get-offsets.sh", "intruder", "--topic", TOPIC)
-    # Sans ACL Describe, Kafka MASQUE le topic dans les métadonnées : l'outil
-    # répond « Could not match any topic-partitions », pas une erreur
-    # d'autorisation (constaté, Kafka 4.3 — documenté dans le tutoriel §A10.6).
-    record("refus d'AUTORISATION d'un CN sans ACL (bonne CA) : topic invisible",
-           f"{TOPIC}:" not in out and ("Could not match any topic-partitions" in out
-                                        or "TopicAuthorizationException" in out),
-           why(out))
-    # Idempotence désactivée : sinon le refus porte d'abord sur IdempotentWrite
-    # (ClusterAuthorizationException) et non sur l'ACL Write du topic.
-    out = kcli("kafka-console-producer.sh", "edot-client", "--topic", TOPIC,
-               "--producer-property", "enable.idempotence=false", input='{"resourceLogs":[]}\n')
-    record("EDOT ne peut PAS écrire dans le topic (aucune ACL Write)",
-           "TopicAuthorizationException" in out or "Not authorized" in out or "TOPIC_AUTHORIZATION_FAILED" in out,
-           why(out))
-
-
 def scenario_secrets(b: Bench):
     bold("==> Aucun identifiant dans les logs EDOT")
     logs = b.edot_logs()
     leaked = [i for i, v in enumerate(b.secret_values()) if v and v in logs]
-    record("aucun mot de passe, API Key ni clé privée dans les logs des conteneurs EDOT", not leaked,
+    record("aucun mot de passe ni API Key dans les logs des conteneurs EDOT", not leaked,
            f"{len(leaked)} valeur(s) trouvée(s)" if leaked else "")
 
 
@@ -709,7 +594,6 @@ def main() -> int:
         b.start_backends()
         b.start_edot()
         info("2 réplicas EDOT démarrés (UID 1000680000, rootfs en lecture seule, sans capability)")
-        scenario_kafka_mtls(b)
         if args.scenario in ("filtering", "all"):
             scenario_filtering(b)
         if args.scenario in ("resilience", "all"):

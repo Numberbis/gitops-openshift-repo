@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Chaîne d'ingestion de logs Kafka (externe) → EDOT Collector (namespace edot) → Elasticsearch (externe). Source : edot-collector/dashboards/edot-collector.json. Documentation : edot-collector/README.md §15.",
+  "description": "Chaîne d'ingestion de logs Kafka (externe) → EDOT Collector (namespace edot) → Elasticsearch (externe). Source : infra/edot-collector/dashboards/edot-collector.json. Documentation : infra/edot-collector/README.md §15.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,

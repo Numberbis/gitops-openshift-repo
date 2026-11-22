@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Job producteur, profil Kubernetes standard : l'image Python s'exécute en
+# root par défaut, un UID numérique non root est imposé (Pod Security
+# « restricted »).
+resources:
+  - ../../../producer
+
+patches:
+  - target:
+      kind: Job
+    patch: |-
+      - op: add
+        path: /spec/template/spec/securityContext/runAsUser
+        value: 10001
+      - op: add
+        path: /spec/template/spec/securityContext/runAsGroup
+        value: 10001

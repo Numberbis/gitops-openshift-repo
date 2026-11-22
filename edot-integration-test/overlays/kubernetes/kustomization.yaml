@@ -1,0 +1,71 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Profil KUBERNETES STANDARD (kubeadm, kind… — cluster homelab de ce dépôt),
+# namespace en Pod Security « restricted ».
+#
+#   * UID/GID numériques explicites : l'image Kafka déclare un utilisateur
+#     NON numérique (appuser) ; sans runAsUser, le kubelet refuse runAsNonRoot.
+#     10001 : hors des comptes système (même choix que l'EDOT Collector,
+#     infra/edot-collector/values-kubernetes.yaml). Les deux images
+#     fonctionnent avec un UID quelconque (vérifié, VALIDATION.md).
+#   * StorageClass local-path : volume local au nœud, SANS réplication.
+#     longhorn (classe par défaut du cluster) répliquerait chaque volume 3
+#     fois : inutile pour des données de test jetables.
+#
+# Changer de StorageClass après création : supprimer les PVC (cleanup.sh
+# --delete-pvc), volumeClaimTemplates étant immuable.
+#   * Kibana : exposé sur le tailnet (tailscale/, Ingress de classe
+#     tailscale) ; URL publique et cookies « Secure » alignés sur cette URL.
+resources:
+  - ../../base
+  - tailscale
+
+patches:
+  - target:
+      kind: StatefulSet
+    patch: |-
+      - op: add
+        path: /spec/template/spec/securityContext/runAsUser
+        value: 10001
+      - op: add
+        path: /spec/template/spec/securityContext/runAsGroup
+        value: 10001
+      - op: add
+        path: /spec/template/spec/securityContext/fsGroup
+        value: 10001
+      - op: add
+        path: /spec/volumeClaimTemplates/0/spec/storageClassName
+        value: local-path
+  - target:
+      kind: Job
+    patch: |-
+      - op: add
+        path: /spec/template/spec/securityContext/runAsUser
+        value: 10001
+      - op: add
+        path: /spec/template/spec/securityContext/runAsGroup
+        value: 10001
+  - target:
+      kind: Deployment
+      name: kibana
+    patch: |-
+      - op: add
+        path: /spec/template/spec/securityContext/runAsUser
+        value: 10001
+      - op: add
+        path: /spec/template/spec/securityContext/runAsGroup
+        value: 10001
+      - op: add
+        path: /spec/template/spec/securityContext/fsGroup
+        value: 10001
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: SERVER_PUBLICBASEURL
+          value: https://edot-kibana.tail0903df.ts.net
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: XPACK_SECURITY_SECURECOOKIES
+          value: "true"
