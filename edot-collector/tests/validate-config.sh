@@ -214,10 +214,15 @@ kdocs = {d["kind"]: d for d in yaml.safe_load_all(open(f"{work}/rendered-kuberne
 kpsc = kdocs["StatefulSet"]["spec"]["template"]["spec"]["securityContext"]
 check(kpsc.get("runAsUser") == 10001 and kpsc.get("fsGroup") == 10001, "profil Kubernetes : UID 10001 / fsGroup 10001", f"profil Kubernetes {kpsc}")
 
-# Les valeurs de test ne sont référencées par aucune Application.
+# Les valeurs FICTIVES de ce banc (infra/edot-collector/tests/values-test.yaml)
+# ne sont référencées par aucune Application. Chemin exact : l'Application
+# edot-integration-test utilise légitimement SES valeurs de test
+# (infra/edot-integration-test/edot/values-test.yaml, Kafka/ES du namespace de test).
 import glob
-apps = "".join(open(f).read() for f in glob.glob(f"{root}/argocd/applications/**/*.yaml", recursive=True))
-check("values-test" not in apps, "tests/values-test.yaml référencé par aucune Application", "values-test.yaml référencé par une Application")
+fake = "infra/edot-collector/tests/values-test"
+users = sorted(f[len(root):].lstrip("/") for f in glob.glob(f"{root}/argocd/applications/**/*.yaml", recursive=True)
+               if fake in open(f).read())
+check(not users, f"{fake}.yaml référencé par aucune Application", f"{fake}.yaml référencé par : {', '.join(users)}")
 # Aucune synchronisation automatique.
 app = yaml.safe_load(open(f"{root}/argocd/applications/infra/edot-collector.yaml"))
 check("automated" not in app["spec"].get("syncPolicy", {}), "Application en synchronisation MANUELLE", "syncPolicy.automated présent")
@@ -271,6 +276,23 @@ rules = [r for d in docs if d["kind"] == "PrometheusRule" for g in d["spec"]["gr
 import re
 if any(re.search(r"otelcol_\w+_total", r["expr"]) for r in rules):
     errors.append("PrometheusRule : suffixe _total (les compteurs EDOT 9.5.6 n'en ont pas)")
+# Prometheus 3 conserve les noms UTF-8 d'OpenTelemetry : ces métriques et
+# labels gardent leurs points et ne se requêtent qu'entre guillemets
+# ({"otelcol.elasticsearch.docs.processed", …}, by ("http.response.status_code")).
+# La forme à underscores ne correspond à AUCUNE série (vérifié sur
+# Prometheus 3.11 : alertes muettes, panneaux vides).
+dotted = r"otelcol_processor_filter_logs_filtered|otelcol_elasticsearch_\w+|http_client_request_\w+|http_response_status_code|server_address"
+dash = json.loads(cm["data"]["edot-collector.json"])
+def dash_exprs(panels):
+    for p in panels:
+        yield from (t.get("expr", "") for t in p.get("targets", []))
+        yield from dash_exprs(p.get("panels", []))
+for where, expr in [("PrometheusRule " + r.get("alert", "?"), r["expr"]) for r in rules] + \
+                   [("dashboard", e) for e in dash_exprs(dash["panels"])]:
+    for m in sorted(set(re.findall(dotted, expr))):
+        errors.append(f"{where} : « {m} » n'existe pas sous Prometheus 3 (nom avec points, entre guillemets)")
+if 'namespace="edot"' in json.dumps(dash):
+    errors.append('dashboard : namespace="edot" en dur (utiliser la variable $namespace)')
 for d in docs:
     if d["kind"] in ("NetworkPolicy",) and d["metadata"]["namespace"] != "edot":
         errors.append(f"NetworkPolicy {d['metadata']['name']} hors namespace edot")

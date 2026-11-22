@@ -462,6 +462,12 @@ hors de portée d'un `kubectl port-forward`.
 
 ## 9. Supervision des ressources
 
+Dashboard Grafana **« EDOT Collector — Kafka → Elasticsearch »** (celui de la
+production, publié par l'overlay kubernetes) : choisir
+`Namespace = edot-integration-test` en haut du dashboard. Panneaux vides
+attendus : volume des PVC (`local-path` ne publie pas `kubelet_volume_stats_*`)
+et compteurs d'erreurs (ils n'apparaissent qu'au premier incident).
+
 Aucun Prometheus ni Grafana supplémentaire. Ce qui existe déjà suffit :
 
 - **CPU / mémoire** de chaque pod : metrics-server (`kubectl top`) et cAdvisor

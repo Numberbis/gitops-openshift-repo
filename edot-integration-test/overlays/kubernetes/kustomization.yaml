@@ -15,11 +15,16 @@ kind: Kustomization
 #
 # Changer de StorageClass après création : supprimer les PVC (cleanup.sh
 # --delete-pvc), volumeClaimTemplates étant immuable.
+#   * Dashboard Grafana EDOT (namespace monitoring) : celui de la production.
 #   * Kibana : exposé sur le tailnet (tailscale/, Ingress de classe
 #     tailscale) ; URL publique et cookies « Secure » alignés sur cette URL.
 resources:
   - ../../base
   - tailscale
+  # Dashboard Grafana « EDOT Collector » de la production (variable
+  # namespace = edot-integration-test). À RETIRER avant de déployer
+  # l'Application edot-collector, qui le publie aussi (même ConfigMap).
+  - ../../../edot-collector/dashboards
 
 patches:
   - target:

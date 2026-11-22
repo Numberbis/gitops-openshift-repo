@@ -487,13 +487,29 @@ pas utilisé (recommandation de l'exporter). Erreurs, retries et quarantaine : �
   dans `cluster-monitoring-config`) : le ServiceMonitor y est pris en compte sans label.
 - **Dashboard** « EDOT Collector — Kafka → Elasticsearch »
   ([`dashboards/edot-collector.json`](dashboards/edot-collector.json)), provisionné en
-  ConfigMap `grafana_dashboard: "1"` dans `monitoring` (convention du dépôt).
+  ConfigMap `grafana_dashboard: "1"` dans `monitoring` (convention du dépôt,
+  [`dashboards/kustomization.yaml`](dashboards/kustomization.yaml)). Variable
+  **Namespace** : `edot` (production) ou `edot-integration-test`. Tant que la
+  production n'est pas déployée, c'est l'environnement de test qui le publie
+  (overlay kubernetes) : l'y retirer avant de déployer `edot-collector`.
 - **Alertes** : [`prometheusrule.yaml`](prometheusrule.yaml) (21 règles).
 - Niveau de télémétrie `detailed` (métriques par topic/partition).
 
 **Métriques réellement exposées** par EDOT 9.5.6 (relevées sur le banc : 68 noms
 de métriques, histogrammes compris). Attention : **pas de suffixe `_total`** sur les compteurs, et un
 compteur d'échec n'apparaît qu'après le premier échec.
+
+> **Prometheus 3 (noms UTF-8)** : les métriques et labels OpenTelemetry qui
+> contiennent des points les **gardent** dans Prometheus
+> (`otelcol.elasticsearch.docs.processed`, `otelcol_processor_filter_logs.filtered`,
+> `http.client.request.duration_count`, labels `http.response.status_code`,
+> `server.address`). Ils se requêtent entre guillemets :
+> `{"otelcol.elasticsearch.docs.processed", namespace="edot"}`,
+> `sum by ("http.response.status_code") (…)`, et dans une annotation
+> d'alerte `{{ index $labels "http.response.status_code" }}` (backticks à la place des guillemets dans une chaîne YAML). La forme à
+> underscores ne correspond à aucune série (le `/metrics` brut du collecteur,
+> lu par `tests/functional/run-tests.py`, l'emploie, pas Prometheus).
+> `tests/validate-config.sh` refuse ces formes dans les alertes et le dashboard.
 
 | Besoin | Métrique | Remarque |
 |---|---|---|
@@ -504,14 +520,14 @@ compteur d'échec n'apparaît qu'après le premier échec.
 | **Erreurs de décodage** | `otelcol_kafka_receiver_unmarshal_failed_log_records{topic,partition}` | |
 | Connexions Kafka | `otelcol_kafka_broker_connects{node_id,outcome}`, `otelcol_kafka_broker_closed` | `seed_N` = bootstrap |
 | Rebalances | `otelcol_kafka_receiver_partition_start`, `…_partition_close` | |
-| Événements acceptés / **supprimés** | `otelcol_processor_incoming_items`, `otelcol_processor_outgoing_items{processor}`, `otelcol_processor_filter_logs_filtered{filter}` | par catégorie de filtre |
+| Événements acceptés / **supprimés** | `otelcol_processor_incoming_items`, `otelcol_processor_outgoing_items{processor}`, `otelcol_processor_filter_logs.filtered{filter}` | par catégorie de filtre |
 | Événements **transformés** | — | pas de compteur natif « champ supprimé » : le transform ne change pas le nombre de logs (incoming = outgoing) ; l'effet est vérifié par les tests (§20) |
 | Refus mémoire | `otelcol_receiver_refused_log_records`, `otelcol_processor_memory_limiter_accepted_log_records` | |
-| Logs exportés | `otelcol_exporter_sent_log_records`, `otelcol_elasticsearch_docs_processed{outcome,http_response_status_code}` | |
-| **Échecs d'export** | `otelcol_exporter_send_failed_log_records` (lots abandonnés), `otelcol_elasticsearch_docs_processed{outcome!="success"}` | apparaissent au premier échec |
-| **Retries** et causes | `http_client_request_duration_count{http_response_status_code}` : **chaque tentative HTTP** vers Elasticsearch, retries compris, par code (401, 403, 429, 5xx) ; `otelcol_elasticsearch_docs_retried` (retries par document, apparaît au premier) | instrumentation HTTP du client ; les erreurs réseau sans code n'y figurent pas |
+| Logs exportés | `otelcol_exporter_sent_log_records`, `otelcol.elasticsearch.docs.processed{outcome,http.response.status_code}` | |
+| **Échecs d'export** | `otelcol_exporter_send_failed_log_records` (lots abandonnés), `otelcol.elasticsearch.docs.processed{outcome!="success"}` | apparaissent au premier échec |
+| **Retries** et causes | `http.client.request.duration_count{http.response.status_code}` : **chaque tentative HTTP** vers Elasticsearch, retries compris, par code (401, 403, 429, 5xx) ; `otelcol_elasticsearch_docs_retried` (retries par document, apparaît au premier) | instrumentation HTTP du client ; les erreurs réseau sans code n'y figurent pas |
 | **Taille / saturation de file** | `otelcol_exporter_queue_size`, `otelcol_exporter_queue_capacity` (octets) ; `otelcol_exporter_enqueue_failed_log_records` | |
-| **Temps d'export** | `otelcol_elasticsearch_bulk_requests_latency` (histogramme), `otelcol_exporter_in_flight_requests` | |
+| **Temps d'export** | `otelcol.elasticsearch.bulk_requests.latency` (histogramme), `otelcol_exporter_in_flight_requests` | |
 | Mémoire, CPU | `otelcol_process_memory_rss`, `otelcol_process_cpu_seconds`, `container_memory_working_set_bytes` | |
 | Volume des PVC | `kubelet_volume_stats_*` | kubelet |
 
@@ -636,17 +652,17 @@ contiennent des données personnelles) : ajouter temporairement un exporter
 | **Kafka connection refused** | port, pare-feu, NetworkPolicy (CIDR), broker annoncé injoignable | `otelcol_kafka_broker_connects{outcome="failure"}` (node_id) ; `tests/network-diagnostics.sh kafka` (bootstrap **et** advertised.listeners) ; EgressIP autorisée ? |
 | **Kafka authentication failed** | identifiants, mécanisme SASL, compte inexistant, ACL | logs `SASL` / `authentication` ; `network-diagnostics.sh kafka` (authentification + ACL) ; mécanisme dans values-kafka.yaml |
 | Kafka : TLS / certificat | CA incomplète, nom absent du SAN, broker annoncé par IP | `network-diagnostics.sh kafka` (vérification par nom) |
-| **Elasticsearch 403** | privilèges de l'API Key (`create_doc`, `auto_configure`, `monitor`), data stream hors `names`, proxy | requête : retentée, export bloqué (`EdotElasticsearchExportBlocked`) ; par document : `otelcol_elasticsearch_docs_processed{http_response_status_code="403"}` ; `network-diagnostics.sh elasticsearch` (`_has_privileges`) |
-| Elasticsearch 401 | API Key révoquée, expirée, mal copiée (valeur `encoded` attendue) | **aucun log** : `http_client_request_duration_count{http_response_status_code="401"}`, alerte `EdotElasticsearchAuthRejected` ; export bloqué sans perte (testé) ; corriger Vault puis `rollout restart` |
+| **Elasticsearch 403** | privilèges de l'API Key (`create_doc`, `auto_configure`, `monitor`), data stream hors `names`, proxy | requête : retentée, export bloqué (`EdotElasticsearchExportBlocked`) ; par document : `otelcol.elasticsearch.docs.processed{http.response.status_code="403"}` ; `network-diagnostics.sh elasticsearch` (`_has_privileges`) |
+| Elasticsearch 401 | API Key révoquée, expirée, mal copiée (valeur `encoded` attendue) | **aucun log** : `http.client.request.duration_count{http.response.status_code="401"}`, alerte `EdotElasticsearchAuthRejected` ; export bloqué sans perte (testé) ; corriger Vault puis `rollout restart` |
 | **Elasticsearch 429** | Elasticsearch saturé (`es_rejected_execution`) | retenté automatiquement avec backoff ; si persistant : capacité ES, réduire `num_consumers`, lots plus gros |
-| Elasticsearch 400 | document refusé (mapping, champ en conflit) | `otelcol_elasticsearch_docs_processed{outcome="failed_client"}` ; logs `error.type` ; failure store ; adapter le producteur ou une règle transform |
+| Elasticsearch 400 | document refusé (mapping, champ en conflit) | `otelcol.elasticsearch.docs.processed{outcome="failed_client"}` ; logs `error.type` ; failure store ; adapter le producteur ou une règle transform |
 | **OTLP JSON decoding error** | producteur en `otlp_proto`, JSON libre ou tronqué, message trop gros | `otelcol_kafka_receiver_unmarshal_failed_log_records` ; log `failed to unmarshal message` + topic/partition/offset ; lire le message (§19.4) |
 | **OTTL filter syntax error** | expression invalide | refusée **avant merge** par `tests/validate-config.sh` (et la CI) ; à l'exécution, une condition en erreur de type est ignorée (`error_mode: ignore`, log `warn`) et le log est **conservé** |
 | **PVC permission denied** | fsGroup absent (SCC personnalisée, profil Kubernetes sans fsGroup), volume NFS `root_squash` | `oc -n edot exec … -- id; ls -ld /var/lib/edot` ; StorageClass compatible fsGroup ; ne PAS passer en root |
 | PVC Pending | StorageClass absente ou zone | `oc -n edot describe pvc` |
 | **Consumer lag increasing** | export lent ou bloqué, CPU/mémoire, partitions > réplicas utiles, pic de production | dashboard (débit consommé vs exporté, latence bulk, file) ; ajouter des réplicas (≤ partitions) ; capacité Elasticsearch |
 | **Exporter queue full** | Elasticsearch indisponible ou trop lent | normal pendant une panne : Kafka suspendu, aucune perte ; surveiller la rétention Kafka restante ; corriger la cause ES |
-| Aucune donnée, aucune erreur | topic vide, mauvais topic, `initial_offset: latest` au premier démarrage, tout est filtré | `otelcol_receiver_accepted_log_records`, `otelcol_processor_filter_logs_filtered` ; describe du groupe (`network-diagnostics.sh`) |
+| Aucune donnée, aucune erreur | topic vide, mauvais topic, `initial_offset: latest` au premier démarrage, tout est filtré | `otelcol_receiver_accepted_log_records`, `otelcol_processor_filter_logs.filtered` ; describe du groupe (`network-diagnostics.sh`) |
 
 ## 19. Fiabilité de la collecte
 
@@ -691,7 +707,7 @@ pas** une livraison exactement une fois : des **doublons** sont possibles.
 > **Retries silencieux** (constaté sur EDOT 9.5.6) : pendant un 401 / 403 /
 > 429 / 5xx, le client HTTP retente **sans écrire aucune ligne** de log
 > `warn`/`error` et sans incrémenter de compteur d'échec. Signaux :
-> `http_client_request_duration_count{http_response_status_code=…}` (alertes
+> `http.client.request.duration_count{http.response.status_code=…}` (alertes
 > `EdotElasticsearchAuthRejected`, `EdotElasticsearchHttpRetries`), la file qui
 > se remplit et le débit exporté nul (`EdotElasticsearchExportBlocked`).
 
