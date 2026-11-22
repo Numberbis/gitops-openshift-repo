@@ -1,0 +1,9 @@
+# Options JVM de l'environnement de TEST (copiées dans config/jvm.options.d/).
+# La taille de heap est fixée par ES_JAVA_OPTS dans statefulset.yaml.
+#
+# Le jvm.options de l'image écrit les logs GC dans un fichier relatif au
+# répertoire de travail (rootfs en lecture seule ici, et jusqu'à 2 Gio) :
+# toutes les sorties -Xlog sont désactivées puis seuls les avertissements de
+# la JVM sont renvoyés sur la sortie d'erreur.
+-Xlog:disable
+-Xlog:all=warning:stderr:utctime,level,tags

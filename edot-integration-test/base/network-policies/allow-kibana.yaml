@@ -1,0 +1,60 @@
+# Kibana : seuls les pods étiquetés edot-integration-test/kibana-client=true
+# (Job kibana-setup) joignent Kibana:5601 dans le namespace. L'accès des
+# personnes passe par l'exposition propre à la plateforme (overlay kubernetes :
+# Ingress Tailscale et sa NetworkPolicy dédiée).
+# Kibana lui-même porte le label elasticsearch-client (allow-elasticsearch.yaml)
+# et n'a aucune autre sortie que le DNS : pas d'accès Internet (télémétrie,
+# cartes, registre Fleet).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kibana-ingress
+  labels:
+    network-policy-phase: allow
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          - kibana
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: edot-integration-test/kibana-client
+                operator: In
+                values:
+                  - "true"
+      ports:
+        - protocol: TCP
+          port: 5601
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kibana-egress
+  labels:
+    network-policy-phase: allow
+spec:
+  podSelector:
+    matchExpressions:
+      - key: edot-integration-test/kibana-client
+        operator: In
+        values:
+          - "true"
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - kibana
+      ports:
+        - protocol: TCP
+          port: 5601

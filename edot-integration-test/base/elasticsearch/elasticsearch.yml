@@ -1,0 +1,47 @@
+# =============================================================================
+# Elasticsearch 9.5.6 — nœud UNIQUE de TEST (edot-integration-test)
+# =============================================================================
+# NE JAMAIS réutiliser en production : pas de TLS HTTP, pas de réplica, mmap
+# désactivé. Le nœud n'est joignable que depuis les pods autorisés du
+# namespace (network-policies/), sans Route, Ingress ni NodePort.
+
+cluster.name: edot-integration-test
+node.name: ${POD_NAME}
+network.host: 0.0.0.0
+http.port: 9200
+
+# ── Mono-nœud ────────────────────────────────────────────────────────────────
+# Pas de découverte, pas d'élection : le nœud forme seul son cluster. Les
+# bootstrap checks de production ne sont pas imposés dans ce mode.
+discovery.type: single-node
+
+# ── Stockage ─────────────────────────────────────────────────────────────────
+path.data: /usr/share/elasticsearch/data
+# Pas de mmap pour les index : Elasticsearch démarre même si le paramètre
+# noyau vm.max_map_count des workers est bas (65530 par défaut), SANS
+# DaemonSet privilégié ni modification des nœuds. Coût : lectures un peu plus
+# lentes (niofs), sans importance pour un volume de test. Option supportée en
+# 9.x (vérifié au démarrage, VALIDATION.md).
+node.store.allow_mmap: false
+
+# ── Sécurité : AUTHENTIFICATION ACTIVE, TLS DÉSACTIVÉ (test uniquement) ──────
+# * xpack.security.enabled : tout appel exige un utilisateur (elastic pour
+#   l'administration, edot-integration-test pour l'écriture — Job
+#   elasticsearch-setup) ;
+# * TLS HTTP désactivé : EDOT et les tests utilisent http:// via le Service,
+#   sans gestion de CA. Les identifiants circulent en clair DANS le cluster :
+#   compensé par les NetworkPolicies (seuls les pods étiquetés
+#   edot-integration-test/elasticsearch-client joignent le port 9200) ;
+# * TLS transport inutile : aucun autre nœud (autorisé en single-node).
+xpack.security.enabled: true
+xpack.security.http.ssl.enabled: false
+xpack.security.transport.ssl.enabled: false
+xpack.security.enrollment.enabled: false
+
+# ── Fonctions inutiles au test : désactivées (mémoire, CPU, trafic sortant) ──
+xpack.ml.enabled: false
+xpack.watcher.enabled: false
+# Pas de téléchargement des bases GeoIP (aucun accès Internet nécessaire).
+ingest.geoip.downloader.enabled: false
+
+action.destructive_requires_name: true

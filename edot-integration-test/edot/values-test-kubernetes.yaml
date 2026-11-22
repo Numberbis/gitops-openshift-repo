@@ -1,0 +1,23 @@
+# EDOT de test — complément du profil KUBERNETES STANDARD (cluster du dépôt),
+# fusionné APRÈS values-test.yaml. Absent sur OpenShift.
+#
+# StorageClass local-path pour la file persistante : volume local au nœud,
+# sans réplication (longhorn, classe par défaut, répliquerait 3 fois).
+# La liste est REMPLACÉE en entier (fusion Helm) : la garder identique à
+# celle de values-test.yaml, storageClassName en plus.
+statefulset:
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: queue
+        labels:
+          app.kubernetes.io/part-of: edot-integration-test
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        volumeMode: Filesystem
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 1Gi

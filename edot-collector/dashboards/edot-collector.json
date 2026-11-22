@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Chaîne d'ingestion de logs Kafka (externe) → EDOT Collector (namespace edot) → Elasticsearch (externe). Source : edot-collector/dashboards/edot-collector.json. Documentation : edot-collector/README.md §15.",
+  "description": "Chaîne d'ingestion de logs Kafka (externe) → EDOT Collector (namespace edot) → Elasticsearch (externe). Source : infra/edot-collector/dashboards/edot-collector.json. Documentation : infra/edot-collector/README.md §15.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -49,6 +49,30 @@
         "regex": "",
         "skipUrlSync": false,
         "type": "datasource"
+      },
+      {
+        "name": "namespace",
+        "label": "Namespace",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values(otelcol_process_uptime, namespace)",
+        "query": {
+          "query": "label_values(otelcol_process_uptime, namespace)",
+          "refId": "namespace"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": false,
+        "multi": false,
+        "current": {
+          "selected": true,
+          "text": "edot",
+          "value": "edot"
+        },
+        "description": "edot : production ; edot-integration-test : environnement de test (infra/edot-integration-test)"
       }
     ]
   },
@@ -98,7 +122,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(up{namespace=\"edot\", service=\"edot-collector\"}) or vector(0)",
+          "expr": "sum(up{namespace=\"$namespace\", service=~\"edot-collector(-test)?\"}) or vector(0)",
           "legendFormat": "__auto",
           "range": false,
           "instant": true,
@@ -172,7 +196,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(otelcol_kafka_receiver_offset_lag{namespace=\"edot\"}) or vector(0)",
+          "expr": "sum(otelcol_kafka_receiver_offset_lag{namespace=\"$namespace\"}) or vector(0)",
           "legendFormat": "__auto",
           "range": false,
           "instant": true,
@@ -246,7 +270,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(otelcol_exporter_sent_log_records{namespace=\"edot\"}[5m])) or vector(0)",
+          "expr": "sum(rate(otelcol_exporter_sent_log_records{namespace=\"$namespace\"}[5m])) or vector(0)",
           "legendFormat": "__auto",
           "range": false,
           "instant": true,
@@ -312,7 +336,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(otelcol_processor_filter_logs_filtered{namespace=\"edot\"}[5m])) or vector(0)",
+          "expr": "sum(rate({\"otelcol_processor_filter_logs.filtered\", namespace=\"$namespace\"}[5m])) or vector(0)",
           "legendFormat": "__auto",
           "range": false,
           "instant": true,
@@ -378,7 +402,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(otelcol_exporter_send_failed_log_records{namespace=\"edot\"}[1h])) or vector(0)",
+          "expr": "sum(increase(otelcol_exporter_send_failed_log_records{namespace=\"$namespace\"}[1h])) or vector(0)",
           "legendFormat": "__auto",
           "range": false,
           "instant": true,
@@ -448,7 +472,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "max(otelcol_exporter_queue_size{namespace=\"edot\"} / otelcol_exporter_queue_capacity{namespace=\"edot\"}) or vector(0)",
+          "expr": "max(otelcol_exporter_queue_size{namespace=\"$namespace\"} / otelcol_exporter_queue_capacity{namespace=\"$namespace\"}) or vector(0)",
           "legendFormat": "__auto",
           "range": false,
           "instant": true,
@@ -535,7 +559,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (topic) (rate(otelcol_kafka_receiver_messages{namespace=\"edot\", outcome=\"success\"}[5m]))",
+          "expr": "sum by (topic) (rate(otelcol_kafka_receiver_messages{namespace=\"$namespace\", outcome=\"success\"}[5m]))",
           "legendFormat": "{{topic}}",
           "range": true,
           "instant": false,
@@ -598,7 +622,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (topic, partition) (otelcol_kafka_receiver_offset_lag{namespace=\"edot\"})",
+          "expr": "sum by (topic, partition) (otelcol_kafka_receiver_offset_lag{namespace=\"$namespace\"})",
           "legendFormat": "{{topic}}/{{partition}}",
           "range": true,
           "instant": false,
@@ -661,7 +685,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(otelcol_kafka_receiver_records_delay_bucket{namespace=\"edot\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(otelcol_kafka_receiver_records_delay_bucket{namespace=\"$namespace\"}[5m])))",
           "legendFormat": "p95",
           "range": true,
           "instant": false,
@@ -724,7 +748,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (topic, partition) (increase(otelcol_kafka_receiver_unmarshal_failed_log_records{namespace=\"edot\"}[5m]))",
+          "expr": "sum by (topic, partition) (increase(otelcol_kafka_receiver_unmarshal_failed_log_records{namespace=\"$namespace\"}[5m]))",
           "legendFormat": "{{topic}}/{{partition}}",
           "range": true,
           "instant": false,
@@ -787,7 +811,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (outcome) (increase(otelcol_kafka_broker_connects{namespace=\"edot\"}[5m]))",
+          "expr": "sum by (outcome) (increase(otelcol_kafka_broker_connects{namespace=\"$namespace\"}[5m]))",
           "legendFormat": "{{outcome}}",
           "range": true,
           "instant": false,
@@ -850,7 +874,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(otelcol_kafka_receiver_partition_start{namespace=\"edot\"}[5m]))",
+          "expr": "sum(increase(otelcol_kafka_receiver_partition_start{namespace=\"$namespace\"}[5m]))",
           "legendFormat": "attribuées",
           "range": true,
           "instant": false,
@@ -862,7 +886,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(otelcol_kafka_receiver_partition_close{namespace=\"edot\"}[5m]))",
+          "expr": "sum(increase(otelcol_kafka_receiver_partition_close{namespace=\"$namespace\"}[5m]))",
           "legendFormat": "retirées",
           "range": true,
           "instant": false,
@@ -938,7 +962,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(otelcol_receiver_accepted_log_records{namespace=\"edot\"}[5m]))",
+          "expr": "sum(rate(otelcol_receiver_accepted_log_records{namespace=\"$namespace\"}[5m]))",
           "legendFormat": "reçus",
           "range": true,
           "instant": false,
@@ -950,7 +974,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(otelcol_processor_filter_logs_filtered{namespace=\"edot\"}[5m]))",
+          "expr": "sum(rate({\"otelcol_processor_filter_logs.filtered\", namespace=\"$namespace\"}[5m]))",
           "legendFormat": "filtrés",
           "range": true,
           "instant": false,
@@ -962,7 +986,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(otelcol_exporter_sent_log_records{namespace=\"edot\"}[5m]))",
+          "expr": "sum(rate(otelcol_exporter_sent_log_records{namespace=\"$namespace\"}[5m]))",
           "legendFormat": "exportés",
           "range": true,
           "instant": false,
@@ -1025,7 +1049,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (filter) (rate(otelcol_processor_filter_logs_filtered{namespace=\"edot\"}[5m]))",
+          "expr": "sum by (filter) (rate({\"otelcol_processor_filter_logs.filtered\", namespace=\"$namespace\"}[5m]))",
           "legendFormat": "{{filter}}",
           "range": true,
           "instant": false,
@@ -1088,7 +1112,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (pod) (rate(otelcol_receiver_refused_log_records{namespace=\"edot\"}[5m]))",
+          "expr": "sum by (pod) (rate(otelcol_receiver_refused_log_records{namespace=\"$namespace\"}[5m]))",
           "legendFormat": "{{pod}}",
           "range": true,
           "instant": false,
@@ -1164,8 +1188,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (outcome, http_response_status_code) (rate(otelcol_elasticsearch_docs_processed{namespace=\"edot\"}[5m]))",
-          "legendFormat": "{{outcome}} {{http_response_status_code}}",
+          "expr": "sum by (outcome, \"http.response.status_code\") (rate({\"otelcol.elasticsearch.docs.processed\", namespace=\"$namespace\"}[5m]))",
+          "legendFormat": "{{outcome}} {{http.response.status_code}}",
           "range": true,
           "instant": false,
           "refId": "A"
@@ -1227,7 +1251,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(otelcol_elasticsearch_bulk_requests_latency_bucket{namespace=\"edot\"}[5m])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate({\"otelcol.elasticsearch.bulk_requests.latency_bucket\", namespace=\"$namespace\"}[5m])))",
           "legendFormat": "p50",
           "range": true,
           "instant": false,
@@ -1239,7 +1263,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(otelcol_elasticsearch_bulk_requests_latency_bucket{namespace=\"edot\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate({\"otelcol.elasticsearch.bulk_requests.latency_bucket\", namespace=\"$namespace\"}[5m])))",
           "legendFormat": "p95",
           "range": true,
           "instant": false,
@@ -1302,7 +1326,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (pod) (increase(otelcol_exporter_send_failed_log_records{namespace=\"edot\"}[5m]))",
+          "expr": "sum by (pod) (increase(otelcol_exporter_send_failed_log_records{namespace=\"$namespace\"}[5m]))",
           "legendFormat": "{{pod}}",
           "range": true,
           "instant": false,
@@ -1365,7 +1389,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (pod) (otelcol_exporter_queue_size{namespace=\"edot\"})",
+          "expr": "sum by (pod) (otelcol_exporter_queue_size{namespace=\"$namespace\"})",
           "legendFormat": "{{pod}}",
           "range": true,
           "instant": false,
@@ -1428,7 +1452,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (pod) (otelcol_exporter_in_flight_requests{namespace=\"edot\"})",
+          "expr": "sum by (pod) (otelcol_exporter_in_flight_requests{namespace=\"$namespace\"})",
           "legendFormat": "{{pod}}",
           "range": true,
           "instant": false,
@@ -1491,7 +1515,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "1 - kubelet_volume_stats_available_bytes{namespace=\"edot\", persistentvolumeclaim=~\"queue-edot-collector-.*\"} / kubelet_volume_stats_capacity_bytes{namespace=\"edot\", persistentvolumeclaim=~\"queue-edot-collector-.*\"}",
+          "expr": "1 - kubelet_volume_stats_available_bytes{namespace=\"$namespace\", persistentvolumeclaim=~\"queue-edot-collector-.*\"} / kubelet_volume_stats_capacity_bytes{namespace=\"$namespace\", persistentvolumeclaim=~\"queue-edot-collector-.*\"}",
           "legendFormat": "{{persistentvolumeclaim}}",
           "range": true,
           "instant": false,
@@ -1554,8 +1578,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (http_response_status_code) (rate(http_client_request_duration_count{namespace=\"edot\"}[5m]))",
-          "legendFormat": "HTTP {{http_response_status_code}}",
+          "expr": "sum by (\"http.response.status_code\") (rate({\"http.client.request.duration_count\", namespace=\"$namespace\"}[5m]))",
+          "legendFormat": "HTTP {{http.response.status_code}}",
           "range": true,
           "instant": false,
           "refId": "A"
@@ -1630,7 +1654,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (pod) (otelcol_process_memory_rss{namespace=\"edot\"})",
+          "expr": "sum by (pod) (otelcol_process_memory_rss{namespace=\"$namespace\"})",
           "legendFormat": "{{pod}}",
           "range": true,
           "instant": false,
@@ -1693,7 +1717,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (pod) (rate(otelcol_process_cpu_seconds{namespace=\"edot\"}[5m]))",
+          "expr": "sum by (pod) (rate(otelcol_process_cpu_seconds{namespace=\"$namespace\"}[5m]))",
           "legendFormat": "{{pod}}",
           "range": true,
           "instant": false,

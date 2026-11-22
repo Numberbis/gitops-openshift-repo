@@ -1,0 +1,184 @@
+# Elasticsearch de TEST : un nœud unique, image officielle Elastic, aucun
+# Operator (ECK absent du cluster et volontairement non installé).
+# Configuration : elasticsearch.yml, jvm-test.options.
+#
+# Sécurité : compatible SCC OpenShift restricted-v2 ET Pod Security
+# « restricted » : aucun UID fixé ici, rootfs en lecture seule, aucune
+# capability, aucun initContainer privilégié, aucun sysctl
+# (node.store.allow_mmap: false rend vm.max_map_count sans objet).
+# Répertoires inscriptibles : data (PVC), config, logs et /tmp (emptyDir).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: elasticsearch
+  labels:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/component: search
+    app.kubernetes.io/version: "9.5.6"
+spec:
+  serviceName: elasticsearch-headless
+  replicas: 1
+  podManagementPolicy: Parallel
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: elasticsearch
+      app.kubernetes.io/component: search
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: elasticsearch
+        app.kubernetes.io/component: search
+        app.kubernetes.io/version: "9.5.6"
+    spec:
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        runAsNonRoot: true
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Le point d'entrée de l'image écrit dans config/ (keystore contenant
+        # le mot de passe initial d'elastic) : config/ est un emptyDir,
+        # initialisé avec la configuration de l'image puis celle du dépôt.
+        - name: config
+          image: docker.elastic.co/elasticsearch/elasticsearch:9.5.6@sha256:79b4f1de4c15e6eca824723086a51e5934406d614d410cc11be77748cafac537
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              cp -r /usr/share/elasticsearch/config/. /work/config/
+              cp /etc/es-test/elasticsearch.yml /work/config/elasticsearch.yml
+              cp /etc/es-test/jvm-test.options /work/config/jvm.options.d/test.options
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: config
+              mountPath: /work/config
+            - name: es-test-config
+              mountPath: /etc/es-test
+              readOnly: true
+      containers:
+        - name: elasticsearch
+          image: docker.elastic.co/elasticsearch/elasticsearch:9.5.6@sha256:79b4f1de4c15e6eca824723086a51e5934406d614d410cc11be77748cafac537
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # Heap : 1 Gio pour une limite de 2 Gio (≤ 50 % : le reste sert au
+            # hors-heap Lucene, aux threads et au cache de pages). Mesuré :
+            # ~1,4 Gio de RSS au repos. Augmenter les deux ensemble (README §10).
+            - name: ES_JAVA_OPTS
+              value: "-Xms1g -Xmx1g"
+            # Mot de passe du superutilisateur elastic, lu au premier
+            # démarrage (bootstrap.password). Secret créé hors Git par
+            # scripts/create-secrets.sh.
+            - name: ELASTIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elasticsearch-test-credentials
+                  key: elastic-password
+          ports:
+            - name: http
+              containerPort: 9200
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 250m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          # Démarrage d'une JVM de 1 Gio (AlwaysPreTouch) : jusqu'à 5 min.
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            failureThreshold: 30
+          # Prêt = API authentifiée opérationnelle et cluster au moins yellow.
+          # Le mot de passe est lu dans l'environnement du conteneur (il
+          # n'apparaît pas dans la spécification du pod).
+          readinessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                - >-
+                  curl -fsS -m 4 -o /dev/null -u "elastic:${ELASTIC_PASSWORD}"
+                  "http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=2s"
+            periodSeconds: 10
+            timeoutSeconds: 6
+            failureThreshold: 3
+          # Vivant = port HTTP ouvert (une erreur d'authentification ne doit
+          # pas provoquer de redémarrage).
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: data
+              mountPath: /usr/share/elasticsearch/data
+            - name: config
+              mountPath: /usr/share/elasticsearch/config
+            - name: logs
+              mountPath: /usr/share/elasticsearch/logs
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: es-test-config
+          configMap:
+            name: elasticsearch-config
+        - name: config
+          emptyDir:
+            sizeLimit: 16Mi
+        - name: logs
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: elasticsearch
+          app.kubernetes.io/part-of: edot-integration-test
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        volumeMode: Filesystem
+        resources:
+          requests:
+            storage: 5Gi

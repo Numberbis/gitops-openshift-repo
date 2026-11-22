@@ -1,0 +1,19 @@
+# Dashboard Grafana « EDOT Collector » (sidecar Grafana : label
+# grafana_dashboard, namespace monitoring). Kustomization séparée pour être
+# réutilisée par l'environnement de test (infra/edot-integration-test,
+# overlay kubernetes) tant que l'Application de production n'est pas
+# déployée : UN SEUL des deux doit la référencer à la fois (même ConfigMap).
+# Variable « namespace » du dashboard : edot (production) ou
+# edot-integration-test.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+configMapGenerator:
+  - name: dashboard-edot-collector
+    namespace: monitoring
+    files:
+      - edot-collector.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        grafana_dashboard: "1"

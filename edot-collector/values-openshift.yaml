@@ -1,7 +1,7 @@
 # =============================================================================
 # Profil plateforme OPENSHIFT (SCC restricted-v2) — fichier n°2
 # =============================================================================
-# Utilisé par défaut par apps/40-edot-collector-app.yaml.
+# Utilisé par défaut par argocd/applications/infra/edot-collector.yaml.
 # Pour un cluster Kubernetes non OpenShift : values-kubernetes.yaml À LA
 # PLACE de ce fichier (un seul profil à la fois).
 #

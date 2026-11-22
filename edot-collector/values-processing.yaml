@@ -5,7 +5,7 @@
 # Ce fichier est le SEUL à modifier pour ajouter ou retirer une règle.
 # Une modification fusionnée sur main change le checksum de la configuration :
 # Argo CD redémarre les pods un par un (rolling update). Validation AVANT
-# merge : edot-collector/tests/validate-config.sh (syntaxe OTTL vérifiée
+# merge : infra/edot-collector/tests/validate-config.sh (syntaxe OTTL vérifiée
 # par le binaire EDOT) puis tests/functional/run-tests.sh (effet réel sur des
 # événements OTLP JSON). Mode d'emploi : README §12.
 #

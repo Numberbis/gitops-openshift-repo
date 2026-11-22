@@ -1,4 +1,4 @@
-# EDOT -> brokers Kafka EXTERNES (listener SSL, TLS mutuel : certificat client).
+# EDOT -> brokers Kafka EXTERNES (SASL_SSL).
 #
 # ATTENTION : le client contacte d'abord les brokers de bootstrap, PUIS les
 # adresses annoncées par chaque broker (advertised.listeners). Les CIDR

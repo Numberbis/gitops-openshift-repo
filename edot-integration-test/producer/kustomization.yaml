@@ -1,0 +1,41 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Job producteur, HORS de l'Application Argo CD (lancé à la demande) :
+#   kubectl apply -k infra/edot-integration-test/overlays/kubernetes/producer
+#   kubectl apply -k infra/edot-integration-test/overlays/openshift/producer
+# (ce répertoire seul n'impose aucun UID : base commune aux deux profils)
+# ou, plus simple : scripts/produce.sh (supprime le Job précédent, paramètres
+# en ligne de commande, attend la fin et affiche le résultat).
+namespace: edot-integration-test
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: edot-integration-test
+      edot-integration-test/environment: test
+    includeSelectors: false
+    includeTemplates: true
+
+resources:
+  - job.yaml
+
+configMapGenerator:
+  - name: otlp-producer-script
+    options:
+      disableNameSuffixHash: true
+    files:
+      - produce_otlp.py
+  # Paramètres par défaut d'une campagne (surchargés par scripts/produce.sh).
+  - name: otlp-producer-config
+    options:
+      disableNameSuffixHash: true
+    literals:
+      - BOOTSTRAP=kafka.edot-integration-test.svc.cluster.local:9092
+      - TOPIC=otlp-logs-test
+      # all, ou liste : info,debug,health,excluded,normal,nested,witness
+      - EVENTS=all
+      - COUNT=1
+      # Secondes entre deux messages.
+      - INTERVAL=0
+      # Vide : identifiant généré (affiché dans les logs du Job).
+      - CAMPAIGN_ID=

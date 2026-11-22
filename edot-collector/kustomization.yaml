@@ -2,7 +2,7 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 # Ressources de l'Application edot-collector hors chart
-# (apps/40-edot-collector-app.yaml) :
+# (argocd/applications/infra/edot-collector.yaml) :
 #   * ExternalSecrets + SecretStore Vault (générés par scripts/vault-secrets.py
 #     render depuis infra/manual/external-secrets/inventory.yaml) ;
 #   * alertes Prometheus ;
@@ -19,15 +19,7 @@ resources:
   - external-secrets
   - prometheusrule.yaml
   - network-policies
-
-configMapGenerator:
-  # Même convention que infra/grafana-dashboards : découverte par le label
-  # grafana_dashboard dans le namespace monitoring.
-  - name: dashboard-edot-collector
-    namespace: monitoring
-    files:
-      - dashboards/edot-collector.json
-    options:
-      disableNameSuffixHash: true
-      labels:
-        grafana_dashboard: "1"
+  # Dashboard Grafana (dashboards/kustomization.yaml). Tant que l'environnement
+  # de test le publie (infra/edot-integration-test/overlays/kubernetes), l'y
+  # retirer avant de déployer cette Application : un seul propriétaire.
+  - dashboards

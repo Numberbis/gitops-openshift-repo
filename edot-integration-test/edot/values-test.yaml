@@ -1,0 +1,158 @@
+# =============================================================================
+# EDOT Collector — instance de TEST raccordée au Kafka et à l'Elasticsearch
+# du namespace edot-integration-test — DERNIER fichier de values
+# =============================================================================
+# Réutilise TELS QUELS le chart et les fichiers de PRODUCTION
+# (infra/edot-collector/), qui ne sont PAS modifiés, et ne surcharge que ce
+# qui diffère dans l'environnement de test. Ordre de fusion (le suivant
+# l'emporte, les LISTES sont remplacées, `null` supprime une clé) :
+#
+#   1. infra/edot-collector/values.yaml
+#   2. infra/edot-collector/values-kubernetes.yaml   (ou values-openshift.yaml)
+#   3. infra/edot-collector/values-kafka.yaml
+#   4. infra/edot-collector/values-elasticsearch.yaml
+#   5. infra/edot-collector/values-processing.yaml    ← filtres OTTL de PROD
+#   6. infra/edot-integration-test/edot/values-test.yaml  (ce fichier)
+#   7. infra/edot-integration-test/edot/values-test-kubernetes.yaml
+#      (profil Kubernetes uniquement : StorageClass local-path)
+#
+# Les filtres et suppressions OTTL testés sont donc EXACTEMENT ceux de
+# production (values-processing.yaml) : ce fichier n'en redéfinit aucun.
+#
+# Release Helm « edot-collector-test » dans le namespace edot-integration-test
+# (scripts/deploy.sh ou argocd/applications/infra/edot-integration-test.yaml).
+# L'instance de production (release edot-collector, namespace edot) n'est
+# jamais touchée : noms, namespace, consumer group, identifiants et data
+# stream sont tous distincts.
+#
+# NE JAMAIS référencer ce fichier depuis l'Application de production.
+
+fullnameOverride: edot-collector-test
+
+# ── Dimensionnement de test ──────────────────────────────────────────────────
+# Un seul réplica (pas de haute disponibilité), sans PDB ni répartition.
+replicaCount: 1
+podDisruptionBudget:
+  enabled: false
+topologySpreadConstraints: []
+
+# Faible débit de test : 512 Mio suffisent (GOMEMLIMIT = 80 % ; le
+# memory_limiter de production refuse au-delà de 75 %, soit 384 Mio).
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+# File persistante sur un PVC de 1 Gio (au lieu de 10), StorageClass par
+# défaut du cluster. Profil Kubernetes : values-test-kubernetes.yaml impose
+# local-path (sans réplication).
+statefulset:
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: queue
+        labels:
+          app.kubernetes.io/part-of: edot-integration-test
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        volumeMode: Filesystem
+        resources:
+          requests:
+            storage: 1Gi
+
+# Labels des pods : identification, et autorisation réseau vers Kafka et
+# Elasticsearch (base/network-policies/).
+podLabels:
+  app.kubernetes.io/part-of: edot-integration-test
+  edot-integration-test/environment: test
+  edot-integration-test/kafka-client: "true"
+  edot-integration-test/elasticsearch-client: "true"
+additionalLabels:
+  app.kubernetes.io/part-of: edot-integration-test
+  edot-integration-test/environment: test
+
+# ── Secrets : identifiants Elasticsearch de test uniquement ──────────────────
+# Remplace la liste de production (Kafka SASL + API Key, issus de Vault) :
+# Kafka de test sans authentification, Elasticsearch en utilisateur/mot de
+# passe (Secret créé par scripts/create-secrets.sh, rôle d'écriture minimal
+# créé par le Job elasticsearch-setup).
+extraEnvs:
+  - name: ELASTICSEARCH_USERNAME
+    valueFrom:
+      secretKeyRef:
+        name: elasticsearch-test-credentials
+        key: edot-username
+  - name: ELASTICSEARCH_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: elasticsearch-test-credentials
+        key: edot-password
+
+# Pas de CA à monter (pas de TLS dans l'environnement de test).
+extraVolumes:
+  - name: tmp
+    emptyDir:
+      sizeLimit: 64Mi
+extraVolumeMounts:
+  - name: queue
+    mountPath: /var/lib/edot
+  - name: tmp
+    mountPath: /tmp
+
+config:
+  receivers:
+    kafka:
+      # Service interne du broker de test (une seule adresse : un seul broker).
+      brokers:
+        - kafka.edot-integration-test.svc.cluster.local:9092
+      # Kafka de test en PLAINTEXT sans authentification (base/kafka) :
+      # blocs TLS et SASL de production SUPPRIMÉS (null). Exclusivement ici.
+      tls: null
+      auth: null
+      # Consumer group dédié aux tests.
+      group_id: edot-integration-test
+      logs:
+        topics:
+          - otlp-logs-test
+        encoding: otlp_json
+      # Premier démarrage (groupe sans offset) : lire depuis le début de la
+      # rétention (6 h) pour ne perdre aucun message publié avant que le
+      # Collector ait rejoint le groupe. Chaque campagne de test a son
+      # identifiant : une relecture ne fausse pas les assertions.
+      initial_offset: earliest
+
+  exporters:
+    elasticsearch:
+      endpoints:
+        - http://elasticsearch.edot-integration-test.svc.cluster.local:9200
+      # Authentification basique (utilisateur à privilèges minimaux) à la
+      # place de l'API Key de production ; HTTP sans TLS (test uniquement).
+      api_key: null
+      tls: null
+      user: ${env:ELASTICSEARCH_USERNAME}
+      password: ${env:ELASTICSEARCH_PASSWORD}
+      sending_queue:
+        # 256 Mio au plus dans la file (PVC de 1 Gio).
+        queue_size: 268435456
+        num_consumers: 2
+        batch:
+          # Lots envoyés au plus tard après 1 s : résultats rapides pour les
+          # tests (production : 5 s, lots de 1 à 5 Mo).
+          flush_timeout: 1s
+          min_size: 1
+          max_size: 5000000
+
+  processors:
+    # Data stream de TEST : logs-edotintegration.otel-test (mapping otel).
+    transform/routing:
+      error_mode: ignore
+      log_statements:
+        - context: resource
+          statements:
+            - set(attributes["data_stream.dataset"], "edotintegration") where attributes["data_stream.dataset"] == nil
+            - set(attributes["data_stream.namespace"], "test") where attributes["data_stream.namespace"] == nil

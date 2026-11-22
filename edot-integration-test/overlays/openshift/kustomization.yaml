@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Profil OPENSHIFT (SCC restricted-v2, attribuée par défaut).
+#
+# Aucun runAsUser / runAsGroup / fsGroup : OpenShift attribue l'UID (plage du
+# namespace) et le fsGroup qui rend les PVC inscriptibles. Les fixer ferait
+# refuser les pods par restricted-v2. Aucune SCC personnalisée, aucun
+# RoleBinding : les deux images démarrent avec un UID arbitraire et le GID 0,
+# rootfs en lecture seule (vérifié, VALIDATION.md).
+#
+# StorageClass : celle par défaut du cluster. Pour en imposer une (TODO selon
+# le cluster : `oc get storageclass`), décommenter le patch ci-dessous.
+resources:
+  - ../../base
+
+# patches:
+#   - target:
+#       kind: StatefulSet
+#     patch: |-
+#       - op: add
+#         path: /spec/volumeClaimTemplates/0/spec/storageClassName
+#         value: TODO_STORAGE_CLASS

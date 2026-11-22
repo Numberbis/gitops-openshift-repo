@@ -1,0 +1,36 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - services.yaml
+  - statefulset.yaml
+  - topic-job.yaml
+
+configMapGenerator:
+  # Configuration du broker. Suffixe de hash conservé : une modification de
+  # server.properties change le nom de la ConfigMap, donc le template du
+  # StatefulSet → redémarrage automatique du broker.
+  - name: kafka-config
+    files:
+      - server.properties
+
+  # ── PARAMÈTRES DU TOPIC DE TEST ────────────────────────────────────────────
+  # Modifier ici puis redéployer (scripts/deploy.sh ou sync Argo CD) : le Job
+  # kafka-topic-init réapplique la configuration. Les partitions ne peuvent
+  # qu'augmenter (README §4.3). Nom fixe (sans hash) : référencé par le Job et
+  # par les scripts.
+  - name: kafka-topic-config
+    options:
+      disableNameSuffixHash: true
+    literals:
+      - BOOTSTRAP=kafka.edot-integration-test.svc.cluster.local:9092
+      - TOPIC_NAME=otlp-logs-test
+      - TOPIC_PARTITIONS=3
+      # 6 heures = 21 600 000 ms.
+      - TOPIC_RETENTION_MS=21600000
+
+  - name: kafka-topic-init-script
+    options:
+      disableNameSuffixHash: true
+    files:
+      - topic-init.sh

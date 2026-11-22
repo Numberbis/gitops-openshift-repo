@@ -155,7 +155,7 @@ spec:
             summary: "EDOT : échecs de connexion au broker Kafka {{ $labels.node_id }}"
             description: >-
               node_id « seed_N » = broker de bootstrap, numérique = broker
-              annoncé (advertised.listeners). DNS, pare-feu, TLS ou certificat client (mTLS) :
+              annoncé (advertised.listeners). DNS, pare-feu, TLS ou SASL :
               tests/network-diagnostics.sh kafka ; README §18.
 
     # ── Export Elasticsearch ───────────────────────────────────────────────
@@ -178,12 +178,12 @@ spec:
 
         - alert: EdotElasticsearchDocumentsRejected
           expr: |
-            sum by (outcome, http_response_status_code) (increase(otelcol_elasticsearch_docs_processed{namespace="edot", outcome!="success"}[15m])) > 0
+            sum by (outcome, "http.response.status_code") (increase({"otelcol.elasticsearch.docs.processed", namespace="edot", outcome!="success"}[15m])) > 0
           labels:
             severity: warning
             category: security
           annotations:
-            summary: "EDOT : documents refusés par Elasticsearch ({{ $labels.outcome }}, HTTP {{ $labels.http_response_status_code }})"
+            summary: "EDOT : documents refusés par Elasticsearch ({{ $labels.outcome }}, HTTP {{ index $labels `http.response.status_code` }})"
             description: >-
               Refus document par document dans une réponse bulk (mapping,
               privilège sur un data stream, 429 non résorbé). Redirigés vers
@@ -212,13 +212,13 @@ spec:
         # fois par tentative.
         - alert: EdotElasticsearchAuthRejected
           expr: |
-            sum by (http_response_status_code, server_address) (rate(http_client_request_duration_count{namespace="edot", http_response_status_code=~"401|403"}[5m])) > 0
+            sum by ("http.response.status_code", "server.address") (rate({"http.client.request.duration_count", namespace="edot", "http.response.status_code"=~"401|403"}[5m])) > 0
           for: 5m
           labels:
             severity: critical
             category: security
           annotations:
-            summary: "EDOT : Elasticsearch {{ $labels.server_address }} répond HTTP {{ $labels.http_response_status_code }}"
+            summary: "EDOT : Elasticsearch {{ index $labels `server.address` }} répond HTTP {{ index $labels `http.response.status_code` }}"
             description: >-
               API Key révoquée, expirée ou mal copiée (401) ; privilège
               manquant ou refus d'un proxy (403). L'export est arrêté et
@@ -227,20 +227,20 @@ spec:
 
         - alert: EdotElasticsearchHttpRetries
           expr: |
-            sum by (http_response_status_code, server_address) (rate(http_client_request_duration_count{namespace="edot", http_response_status_code=~"429|5.."}[5m])) > 0
+            sum by ("http.response.status_code", "server.address") (rate({"http.client.request.duration_count", namespace="edot", "http.response.status_code"=~"429|5.."}[5m])) > 0
           for: 15m
           labels:
             severity: warning
             category: observability
           annotations:
-            summary: "EDOT : Elasticsearch {{ $labels.server_address }} renvoie HTTP {{ $labels.http_response_status_code }} depuis 15 min"
+            summary: "EDOT : Elasticsearch {{ index $labels `server.address` }} renvoie HTTP {{ index $labels `http.response.status_code` }} depuis 15 min"
             description: >-
               Saturation (429) ou indisponibilité (5xx) : requêtes retentées
               avec backoff. README §18 « Elasticsearch 429 ».
 
         - alert: EdotElasticsearchSlowExport
           expr: |
-            histogram_quantile(0.95, sum by (le) (rate(otelcol_elasticsearch_bulk_requests_latency_bucket{namespace="edot"}[10m]))) > 10
+            histogram_quantile(0.95, sum by (le) (rate({"otelcol.elasticsearch.bulk_requests.latency_bucket", namespace="edot"}[10m]))) > 10
           for: 15m
           labels:
             severity: warning
